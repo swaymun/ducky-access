@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+<rect width="1280" height="720" fill="#0b1120"/>
+<circle cx="1120" cy="70" r="260" fill="#1c2d63" opacity=".35"/>
+<circle cx="1150" cy="90" r="150" fill="#3d5afe" opacity=".10"/>
+<text x="72" y="68" fill="#8ea2d9" font-family="Helvetica Neue,Arial" font-size="18" font-weight="700" letter-spacing="4">DUCKY ACCESS</text>
+<text x="72" y="128" fill="#ffffff" font-family="Helvetica Neue,Arial" font-size="48" font-weight="700">One pad. Every app.</text>
+<text x="74" y="164" fill="#aab7d6" font-family="Helvetica Neue,Arial" font-size="20">A small, local-first accessibility layer for macOS.</text>
+<rect x="72" y="218" width="442" height="414" rx="24" fill="#131e36" stroke="#33446f"/>
+<text x="104" y="260" fill="#91a7df" font-family="Helvetica Neue,Arial" font-size="15" font-weight="700" letter-spacing="2">WIRED DUCKYPAD PRO</text>
+<rect x="122" y="286" width="342" height="306" rx="22" fill="#222d45" stroke="#526695" stroke-width="3"/>
+<rect x="150" y="314" width="286" height="36" rx="10" fill="#0c1427"/>
+<text x="174" y="338" fill="#e5edff" font-family="Helvetica Neue,Arial" font-size="13" font-weight="700">DUCKY ACCESS  •  READY</text>
+<circle cx="180" cy="378" r="23" fill="#435680"/><circle cx="406" cy="378" r="23" fill="#435680"/>
+<g font-family="Helvetica Neue,Arial" font-size="14" font-weight="700" text-anchor="middle">
+<g fill="#2f67f6"><rect x="150" y="418" width="48" height="38" rx="8"/><rect x="207" y="418" width="48" height="38" rx="8"/><rect x="264" y="418" width="48" height="38" rx="8"/><rect x="321" y="418" width="48" height="38" rx="8"/><rect x="378" y="418" width="48" height="38" rx="8"/></g>
+<g fill="#eaf0ff"><text x="174" y="443">A</text><text x="231" y="443">B</text><text x="288" y="443">C</text><text x="345" y="443">D</text><text x="402" y="443">E</text></g>
+<g fill="#35486e"><rect x="150" y="464" width="48" height="38" rx="8"/><rect x="207" y="464" width="48" height="38" rx="8"/><rect x="264" y="464" width="48" height="38" rx="8"/><rect x="321" y="464" width="48" height="38" rx="8"/><rect x="378" y="464" width="48" height="38" rx="8"/></g>
+<g fill="#eaf0ff"><text x="174" y="489">F</text><text x="231" y="489">G</text><text x="288" y="489">H</text><text x="345" y="489">I</text><text x="402" y="489">J</text></g>
+<g fill="#35486e"><rect x="150" y="510" width="48" height="38" rx="8"/><rect x="207" y="510" width="48" height="38" rx="8"/><rect x="264" y="510" width="48" height="38" rx="8"/><rect x="321" y="510" width="48" height="38" rx="8"/><rect x="378" y="510" width="48" height="38" rx="8"/></g>
+<g fill="#eaf0ff"><text x="174" y="535">K</text><text x="231" y="535">L</text><text x="288" y="535">M</text><text x="345" y="535">N</text><text x="402" y="535">O</text></g>
+<g fill="#eea93a"><rect x="150" y="556" width="48" height="22" rx="6"/><rect x="207" y="556" width="48" height="22" rx="6"/><rect x="264" y="556" width="48" height="22" rx="6"/><rect x="321" y="556" width="48" height="22" rx="6"/><rect x="378" y="556" width="48" height="22" rx="6"/></g>
+<g fill="#172238" font-size="10"><text x="174" y="571">NAV</text><text x="231" y="571">DICT</text><text x="288" y="571">CMD</text><text x="345" y="571">BKSP</text><text x="402" y="571">ESC</text></g></g>
+<rect x="590" y="218" width="618" height="414" rx="24" fill="#111a30" stroke="#26385f"/>
+<rect x="630" y="260" width="154" height="30" rx="15" fill="#183b83"/><text x="707" y="281" fill="#9fbbff" text-anchor="middle" font-family="Helvetica Neue,Arial" font-size="13" font-weight="700">LOCAL-FIRST</text>
+<text x="630" y="356" fill="#fff" font-family="Helvetica Neue,Arial" font-size="34" font-weight="700">Control your Mac</text>
+<text x="630" y="394" fill="#aab7d6" font-family="Helvetica Neue,Arial" font-size="19">Navigate, dictate, switch apps, and scroll</text>
+<text x="630" y="424" fill="#aab7d6" font-family="Helvetica Neue,Arial" font-size="19">without hunting for a window or a mouse.</text>
+<g font-family="Helvetica Neue,Arial" font-size="16" font-weight="700"><rect x="630" y="475" width="150" height="42" rx="12" fill="#213969"/><text x="705" y="502" fill="#c7d7ff" text-anchor="middle">Parakeet · local</text><rect x="798" y="475" width="150" height="42" rx="12" fill="#213969"/><text x="873" y="502" fill="#c7d7ff" text-anchor="middle">Luna · fast</text><rect x="966" y="475" width="166" height="42" rx="12" fill="#213969"/><text x="1049" y="502" fill="#c7d7ff" text-anchor="middle">OLED guide</text></g>
+<text x="630" y="580" fill="#6f83b2" font-family="Helvetica Neue,Arial" font-size="16">A macOS menu-bar bridge • open source • MIT</text>
+</svg>
