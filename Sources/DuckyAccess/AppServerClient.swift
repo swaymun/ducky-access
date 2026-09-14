@@ -1,9 +1,11 @@
 import Foundation
+import OSLog
 
 final class AppServerClient {
     typealias JSON = [String: Any]
     typealias Completion = (Result<JSON, Error>) -> Void
     private static let turnTimeout: TimeInterval = 90
+    private let logger = Logger(subsystem: "com.swaymun.ducky-access", category: "codex")
 
     enum ClientError: LocalizedError {
         case unavailable(String)
@@ -25,7 +27,10 @@ final class AppServerClient {
     private var pending: [Int: Completion] = [:]
     private var pendingOnQueue = Set<Int>()
     private var pendingTurns: [String: Completion] = [:]
+    private var pendingTurnThreads: [String: String] = [:]
     private var messageDeltas: [String: String] = [:]
+    private var bufferedTurnResults: [String: JSON] = [:]
+    private var bufferedTurnFailures: [String: String] = [:]
 
     private(set) var ready = false
     var onReady: (() -> Void)?
@@ -55,7 +60,7 @@ final class AppServerClient {
         Dictated text:
         \(text)
         """
-        runEphemeral(prompt: prompt, model: model, effort: effort, serviceTier: serviceTier) { result in
+        runEphemeral(prompt: prompt, model: model, effort: effort, serviceTier: serviceTier, outputSchema: Self.formatOutputSchema) { result in
             switch result {
             case .success(let value):
                 if let object = Self.jsonObject(from: value),
@@ -79,7 +84,7 @@ final class AppServerClient {
         Never return shell commands, file deletion, purchases, message sending, arbitrary computer control, or any other action. Never invent URLs or app names. If the request is unclear, return {"action":"none","reason":"ambiguous"}.
         Request: \(text)
         """
-        runEphemeral(prompt: prompt, model: model, effort: effort, serviceTier: serviceTier) { result in
+        runEphemeral(prompt: prompt, model: model, effort: effort, serviceTier: serviceTier, outputSchema: Self.commandOutputSchema) { result in
             switch result {
             case .success(let value):
                 guard let object = Self.jsonObject(from: value) else {
@@ -113,12 +118,7 @@ final class AppServerClient {
         }
     }
 
-    private func runEphemeral(prompt: String, model: String, effort: String, serviceTier: String, completion: @escaping (Result<String, Error>) -> Void) {
-        let outputSchema: JSON = [
-            "type": "object",
-            "properties": ["text": ["type": "string"], "action": ["type": "string"], "target": ["type": "string"], "url": ["type": "string"], "direction": ["type": "string"], "name": ["type": "string"], "reason": ["type": "string"]],
-            "additionalProperties": false
-        ]
+    private func runEphemeral(prompt: String, model: String, effort: String, serviceTier: String, outputSchema: JSON, completion: @escaping (Result<String, Error>) -> Void) {
         request(method: "thread/start", params: [
             "ephemeral": true,
             "model": model,
@@ -166,6 +166,13 @@ final class AppServerClient {
                                 DispatchQueue.main.async { completion(.success(text)) }
                             }
                         }
+                        self.pendingTurnThreads[turnID] = threadID
+                        if let message = self.bufferedTurnFailures.removeValue(forKey: turnID) {
+                            self.failTurn(turnID, message: message)
+                        } else if let buffered = self.bufferedTurnResults.removeValue(forKey: turnID) {
+                            self.resolveTurn(turnID, with: buffered)
+                        }
+                        self.logger.info("turn registered id=\(turnID, privacy: .public)")
                         self.queue.asyncAfter(deadline: .now() + Self.turnTimeout) { [weak self] in
                             guard let self,
                                   let timedOut = self.pendingTurns.removeValue(forKey: turnID) else { return }
@@ -216,6 +223,7 @@ final class AppServerClient {
             switch result {
             case .failure(let error): self.publishError(error.localizedDescription)
             case .success:
+                self.logger.info("App Server initialized")
                 self.sendNotification(method: "initialized", params: [:])
                 self.ready = true
                 DispatchQueue.main.async { self.onReady?() }
@@ -234,6 +242,7 @@ final class AppServerClient {
             let id = self.nextID; self.nextID += 1
             self.pending[id] = completion
             if deliverOnQueue { self.pendingOnQueue.insert(id) }
+            self.logger.info("sending request method=\(method, privacy: .public) id=\(id)")
             self.write(["jsonrpc": "2.0", "id": id, "method": method, "params": params])
         }
     }
@@ -253,6 +262,9 @@ final class AppServerClient {
             let line = buffer.prefix(upTo: newline)
             buffer.removeSubrange(...newline)
             guard let object = try? JSONSerialization.jsonObject(with: line) as? JSON else { continue }
+            if let method = object["method"] as? String {
+                logger.info("received event method=\(method, privacy: .public)")
+            }
             if let id = object["id"] as? Int, let completion = pending.removeValue(forKey: id) {
                 let deliverOnQueue = pendingOnQueue.remove(id) != nil
                 if let error = object["error"] as? JSON {
@@ -261,19 +273,17 @@ final class AppServerClient {
                     if deliverOnQueue { deliver() } else { DispatchQueue.main.async(execute: deliver) }
                 } else {
                     let result = object["result"] as? JSON ?? object
+                    logger.info("received response id=\(id)")
                     let deliver = { completion(.success(result)) }
                     if deliverOnQueue { deliver() } else { DispatchQueue.main.async(execute: deliver) }
                 }
             } else if object["method"] as? String == "item/agentMessage/delta",
                       let params = object["params"] as? JSON,
-                      let turnID = params["turnId"] as? String,
-                      pendingTurns[turnID] != nil,
                       let itemID = params["itemId"] as? String,
                       let delta = params["delta"] as? String {
                 messageDeltas[itemID, default: ""] += delta
             } else if object["method"] as? String == "turn/completed", let params = object["params"] as? JSON,
-                      let turnID = (params["turnId"] as? String) ?? ((params["turn"] as? JSON)?["id"] as? String),
-                      pendingTurns[turnID] != nil {
+                      let turnID = (params["turnId"] as? String) ?? ((params["turn"] as? JSON)?["id"] as? String) {
                 // Some server versions send turn/completed before
                 // item/completed. Keep the request pending when the turn
                 // carries no message text yet; the item event can still
@@ -283,17 +293,38 @@ final class AppServerClient {
                     ($0["type"] as? String) == "agentMessage" &&
                     !(($0["text"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 }
-                guard hasMessage, let completion = pendingTurns.removeValue(forKey: turnID) else { continue }
-                DispatchQueue.main.async { completion(.success(params)) }
+                guard hasMessage else { continue }
+                if pendingTurns[turnID] != nil {
+                    resolveTurn(turnID, with: params)
+                } else {
+                    bufferedTurnResults[turnID] = params
+                }
             } else if object["method"] as? String == "turn/failed",
                       let params = object["params"] as? JSON,
-                      let turnID = (params["turnId"] as? String) ?? ((params["turn"] as? JSON)?["id"] as? String),
-                      let completion = pendingTurns.removeValue(forKey: turnID) {
-                let error = (params["error"] as? JSON)?["message"] as? String ?? "Codex App Server could not finish the request"
-                DispatchQueue.main.async { completion(.failure(ClientError.unavailable(error))) }
+                      let turnID = (params["turnId"] as? String) ?? ((params["turn"] as? JSON)?["id"] as? String) {
+                let error = Self.errorMessage(from: params)
+                if pendingTurns[turnID] != nil {
+                    failTurn(turnID, message: error)
+                } else {
+                    bufferedTurnFailures[turnID] = error
+                }
+            } else if object["method"] as? String == "error",
+                      let params = object["params"] as? JSON {
+                logger.error("App Server error event: \(Self.jsonString(params), privacy: .public)")
+                let turnID = Self.turnID(from: params) ?? pendingTurnThreads.first(where: { $0.value == (params["threadId"] as? String) })?.key
+                guard let turnID else {
+                    publishError(Self.errorMessage(from: params))
+                    continue
+                }
+                let error = Self.errorMessage(from: params)
+                if pendingTurns[turnID] != nil {
+                    failTurn(turnID, message: error)
+                } else {
+                    bufferedTurnFailures[turnID] = error
+                }
             } else if object["method"] as? String == "item/completed",
                       let params = object["params"] as? JSON,
-                      let turnID = params["turnId"] as? String,
+                      let turnID = (params["turnId"] as? String) ?? ((params["turn"] as? JSON)?["id"] as? String),
                       let item = params["item"] as? JSON,
                       (item["type"] as? String) == "agentMessage" {
                 var resolvedItem = item
@@ -303,12 +334,30 @@ final class AppServerClient {
                     resolvedItem["text"] = delta
                 }
                 guard let text = resolvedItem["text"] as? String,
-                      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                      let completion = pendingTurns.removeValue(forKey: turnID) else { continue }
+                      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 let response: JSON = ["turn": ["items": [resolvedItem]]]
-                DispatchQueue.main.async { completion(.success(response)) }
+                if pendingTurns[turnID] != nil {
+                    resolveTurn(turnID, with: response)
+                } else {
+                    bufferedTurnResults[turnID] = response
+                }
             }
         }
+    }
+
+    private func resolveTurn(_ turnID: String, with params: JSON) {
+        guard let completion = pendingTurns.removeValue(forKey: turnID) else { return }
+        pendingTurnThreads.removeValue(forKey: turnID)
+        logger.info("turn completed id=\(turnID, privacy: .public)")
+        DispatchQueue.main.async { completion(.success(params)) }
+    }
+
+    private func failTurn(_ turnID: String, message: String) {
+        guard let completion = pendingTurns.removeValue(forKey: turnID) else { return }
+        pendingTurnThreads.removeValue(forKey: turnID)
+        let error = ClientError.unavailable(message)
+        logger.error("turn failed id=\(turnID, privacy: .public) message=\(message, privacy: .public)")
+        DispatchQueue.main.async { completion(.failure(error)) }
     }
 
     private func publishError(_ message: String) {
@@ -319,4 +368,39 @@ final class AppServerClient {
         guard let data = value.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? JSON else { return nil }
         return object
     }
+
+    private static func turnID(from params: JSON) -> String? {
+        (params["turnId"] as? String) ?? ((params["turn"] as? JSON)?["id"] as? String)
+    }
+
+    private static func errorMessage(from params: JSON) -> String {
+        if let error = params["error"] as? JSON, let message = error["message"] as? String { return message }
+        if let message = params["message"] as? String { return message }
+        return "Codex App Server could not finish the request"
+    }
+
+    private static func jsonString(_ value: JSON) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: value), let string = String(data: data, encoding: .utf8) else { return "{}" }
+        return string
+    }
+
+    private static let formatOutputSchema: JSON = [
+        "type": "object",
+        "properties": ["text": ["type": "string"]],
+        "required": ["text"],
+        "additionalProperties": false
+    ]
+
+    private static let commandOutputSchema: JSON = [
+        "type": "object",
+        "properties": [
+            "action": ["type": "string"],
+            "target": ["type": ["string", "null"]],
+            "url": ["type": ["string", "null"]],
+            "direction": ["type": ["string", "null"]],
+            "reason": ["type": ["string", "null"]]
+        ],
+        "required": ["action", "target", "url", "direction", "reason"],
+        "additionalProperties": false
+    ]
 }
