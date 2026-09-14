@@ -114,6 +114,9 @@ final class DuckyPadDetector {
     }
 
     private func receiveReport(_ report: UnsafeMutablePointer<UInt8>, length: CFIndex, reportID: UInt32) {
+        // Report 4 is the configurator protocol, not keyboard input. Parsing
+        // those replies as keys corrupts the held-key/modifier state.
+        guard reportID == 1 else { return }
         // The DuckyPad keyboard report is [report ID, modifiers, reserved,
         // key1...key6]. Some macOS paths include the report ID in the buffer;
         // accept both forms for driver-version compatibility.

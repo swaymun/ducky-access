@@ -13,6 +13,10 @@ Ducky Access is a small, local-first macOS menu-bar bridge for a wired duckyPad 
 - Menu-bar model, reasoning, speed, usage, recent-history, help, and playback controls.
 - Local HTML history viewer with raw text, cleaned text, and recordings.
 
+The black dictation preview extends below the built-in notch at its measured
+width (or 200 points on a display without a notch). Click it to dismiss the
+preview; this does not cancel recording or insertion.
+
 ## Build
 
 Requirements: macOS 14+, Xcode command-line tools, a signed-in ChatGPT desktop app, and a wired duckyPad Pro. A local Apple Development signing identity is used when available so macOS privacy permissions remain stable across rebuilds.
@@ -40,6 +44,20 @@ Monitoring, then relaunch the app. A healthy launch logs
 means the app must be removed and re-added after signing. Accessibility is also
 needed for on-screen hint activation, and Microphone is needed for dictation.
 
+After upgrading from an earlier unsigned build, the Accessibility switch can
+remain on while macOS rejects the new app. Remove the stale `DuckyAccess` entry
+with the minus button, add `/Applications/DuckyAccess.app` again with the plus
+button, enable it, and relaunch. The menu checks the running app's Accessibility
+and keyboard-output permissions and shows whether they are allowed. Keep using
+the same signing identity for subsequent builds.
+
+Dictation reports **Inserted** only after the destination field confirms the
+text changed. It inserts into the editable field focused when formatting
+finishes. If permission is missing or no editable field is focused, the result
+stays on the clipboard for manual paste. Editors whose text cannot
+be inspected show **Paste sent — text also copied**. Recent dictations also have
+an **Insert formatted** action to retry in the focused field.
+
 ## Pad profile
 
 Import the packaged profile with the official duckyPad Configurator, then save it to the pad. Generate it with `./scripts/package-profile.sh`; the single-profile importer expects a ZIP with a top-level directory named `profile_DuckyAccess`. Do not select the repository's `profile/DuckyAccess` source folder directly. On macOS the vendor tool must be launched through its `run.sh` with administrator authentication before Connect can access the device; Ducky Access itself does not need root. The intended physical orientation has the two knobs and OLED above four rows of five switches. `IS_LANDSCAPE 1` rotates the vendor OLED guide and native 4-column × 5-row index order so the legend reads upright in that 5-column × 4-row orientation. Keep the stock +/− profile buttons. Back up the pad first. The bridge is not a replacement for the vendor configurator; see the [vendor macOS notes](https://dekunukem.github.io/duckyPad-Pro/doc/linux_macos_notes.html).
@@ -50,7 +68,11 @@ Import the packaged profile with the official duckyPad Configurator, then save i
 | K | L | M | N | O |
 | NAV | DICT | CMD | BKSP | ESC |
 
-The profile emits reserved modifier/function-key chords. The bridge reads the matched DuckyPad HID interface directly and does not type the visible letters into the focused app.
+The profile emits reserved modifier/function-key chords. The bridge uses its
+keyboard event tap when permitted and the matched DuckyPad HID interface as a
+fallback. Only one path routes actions at a time, so a physical press cannot
+toggle navigation or dictation twice. The visible A–O labels are not typed
+into the focused app.
 
 ## Demo
 

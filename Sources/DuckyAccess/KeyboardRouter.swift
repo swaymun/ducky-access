@@ -10,7 +10,6 @@ final class KeyboardRouter {
     private var tapRetryAttempts = 0
     private var modifiers: UInt8 = 0
     private var pressedKeys = Set<UInt32>()
-    private var lastRoutedAt: [Int: TimeInterval] = [:]
     private let logger = Logger(subsystem: "com.swaymun.ducky-access", category: "keyboard")
     private let functionByKeyCode: [CGKeyCode: Int] = [
         122: 1, 120: 2, 99: 3, 118: 4, 96: 5, 97: 6, 98: 7, 100: 8,
@@ -20,6 +19,12 @@ final class KeyboardRouter {
     ]
 
     var onAction: ((PadAction) -> Void)?
+
+    func refreshPermissions() {
+        guard started, tap == nil, CGPreflightPostEventAccess() else { return }
+        tapRetryAttempts = 0
+        startEventTap()
+    }
 
     // USB HID usages for F1-F12 are 0x3A-0x45; F13-F24 are 0x68-0x73.
     private let functionByUsage: [UInt8: Int] = {
@@ -48,11 +53,14 @@ final class KeyboardRouter {
         tap = nil
         modifiers = 0
         pressedKeys.removeAll()
-        lastRoutedAt.removeAll()
         started = false
     }
 
     private func receive(usage: UInt32, value: Int64) {
+        // The event tap and HID callback both see each physical press. Choose
+        // one source, rather than a time window: AX collection can block the
+        // main run loop long enough for the second copy to escape a debounce.
+        guard tap == nil else { return }
         switch usage {
         case 0xE0...0xE7:
             let bit = UInt8(1 << (usage - 0xE0))
@@ -72,10 +80,6 @@ final class KeyboardRouter {
         let allModifiers = modifiers == 0x0F // Ctrl + Shift + Alt + GUI
         let encoderModifiers = modifiers == 0x07 // Ctrl + Shift + Alt
         guard allModifiers || encoderModifiers else { return false }
-
-        let now = Date.timeIntervalSinceReferenceDate
-        if let previous = lastRoutedAt[function], now - previous < 0.25 { return true }
-        lastRoutedAt[function] = now
 
         logger.info("Received DuckyPad input function=\(function) modifiers=\(modifiers)")
 
@@ -128,7 +132,9 @@ final class KeyboardRouter {
                 let allModifiers: UInt8 = flags == [.maskShift, .maskControl, .maskCommand, .maskAlternate] ? 0x0F : 0
                 let encoderModifiers: UInt8 = flags == [.maskShift, .maskControl, .maskAlternate] ? 0x07 : 0
                 guard allModifiers != 0 || encoderModifiers != 0 else { return Unmanaged.passUnretained(event) }
-                if type == .keyDown { _ = router.route(function: function, modifiers: allModifiers != 0 ? allModifiers : encoderModifiers) }
+                if type == .keyDown && event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                    _ = router.route(function: function, modifiers: allModifiers != 0 ? allModifiers : encoderModifiers)
+                }
                 return nil
             },
             userInfo: context
@@ -148,6 +154,9 @@ final class KeyboardRouter {
         tapRetry?.cancel()
         tapRetry = nil
         tapRetryAttempts = 0
+        modifiers = 0
+        pressedKeys.removeAll()
+        logger.info("DuckyPad event tap active; HID routing is standby")
         source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         if let source { CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes) }
         CGEvent.tapEnable(tap: tap, enable: true)

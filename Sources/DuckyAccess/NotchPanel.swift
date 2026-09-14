@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 
 final class NotchPanelController {
     private let panel: NSPanel
@@ -6,43 +7,49 @@ final class NotchPanelController {
     private let textLabel = NSTextField(labelWithString: "")
     private let waveform = WaveformView(frame: .zero)
     private var timer: Timer?
+    private var dismissed = false
+    private let logger = Logger(subsystem: "com.swaymun.ducky-access", category: "notch")
 
     init() {
-        panel = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 500, height: 96), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 200, height: 96), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.level = .statusBar
         panel.hasShadow = false
-        panel.ignoresMouseEvents = true
+        panel.becomesKeyOnlyIfNeeded = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        let visual = NSView(frame: panel.contentView?.bounds ?? .zero)
+        let visual = DismissibleNotchView(frame: panel.contentView?.bounds ?? .zero)
+        visual.onDismiss = { [weak self] in
+            self?.dismissed = true
+            self?.hide()
+            self?.logger.info("Notch dismissed by click")
+        }
+        visual.setAccessibilityElement(true)
+        visual.setAccessibilityRole(.button)
+        visual.setAccessibilityLabel("Dismiss dictation preview")
+        visual.toolTip = "Click to dismiss"
         visual.wantsLayer = true
         visual.layer?.backgroundColor = NSColor.black.cgColor
-        visual.layer?.cornerRadius = 25
-        visual.layer?.borderWidth = 1
-        visual.layer?.borderColor = NSColor.white.withAlphaComponent(0.08).cgColor
-        visual.layer?.shadowColor = NSColor.black.cgColor
-        visual.layer?.shadowOpacity = 0.35
-        visual.layer?.shadowRadius = 14
-        visual.layer?.shadowOffset = CGSize(width: 0, height: -4)
-        visual.layer?.masksToBounds = false
+        visual.layer?.cornerRadius = 16
+        visual.layer?.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        visual.layer?.masksToBounds = true
         panel.contentView = visual
-        modeLabel.font = .systemFont(ofSize: 12, weight: .semibold)
-        modeLabel.textColor = NSColor.white.withAlphaComponent(0.62)
-        textLabel.font = .systemFont(ofSize: 15, weight: .regular)
+        modeLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        modeLabel.textColor = NSColor.white.withAlphaComponent(0.7)
+        modeLabel.lineBreakMode = .byTruncatingTail
+        textLabel.font = .systemFont(ofSize: 12, weight: .medium)
         textLabel.textColor = .white
         textLabel.lineBreakMode = .byTruncatingTail
+        textLabel.maximumNumberOfLines = 2
         waveform.wantsLayer = true
         visual.addSubview(modeLabel)
         visual.addSubview(waveform)
         visual.addSubview(textLabel)
-        modeLabel.frame = CGRect(x: 26, y: 67, width: 448, height: 17)
-        waveform.frame = CGRect(x: 26, y: 30, width: 112, height: 28)
-        textLabel.frame = CGRect(x: 154, y: 30, width: 320, height: 28)
     }
 
     func show(mode: RecordingMode) {
-        modeLabel.stringValue = mode == .dictate ? "DICTATION" : "COMMAND"
+        dismissed = false
+        modeLabel.stringValue = mode == .dictate ? "Dictation" : "Command"
         textLabel.stringValue = "Listening…"
         waveform.active = true
         position()
@@ -61,11 +68,13 @@ final class NotchPanelController {
     func showResult(_ text: String, status: String) {
         timer?.invalidate(); timer = nil
         waveform.active = false
-        modeLabel.stringValue = status.uppercased()
+        modeLabel.stringValue = status
         textLabel.stringValue = text
         textLabel.toolTip = text
-        position()
-        panel.orderFrontRegardless()
+        if !dismissed {
+            position()
+            panel.orderFrontRegardless()
+        }
     }
 
     func hide() {
@@ -74,9 +83,29 @@ final class NotchPanelController {
     }
 
     private func position() {
-        guard let screen = NSScreen.main else { return }
-        panel.setFrameOrigin(CGPoint(x: screen.frame.midX - panel.frame.width / 2, y: screen.frame.maxY - panel.frame.height))
+        guard let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main else { return }
+        let notchWidth: CGFloat
+        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+            notchWidth = right.minX - left.maxX
+        } else { notchWidth = 200 }
+        let width = notchWidth > 0 ? notchWidth : 200
+        let height = screen.safeAreaInsets.top + 64
+        panel.setFrame(CGRect(x: screen.frame.midX - width / 2, y: screen.frame.maxY - height, width: width, height: height), display: true)
+        modeLabel.frame = CGRect(x: 12, y: 43, width: width - 24, height: 13)
+        waveform.isHidden = !waveform.active
+        waveform.frame = CGRect(x: 12, y: 17, width: 32, height: 18)
+        let textX: CGFloat = waveform.active ? 52 : 12
+        textLabel.frame = CGRect(x: textX, y: 9, width: width - textX - 12, height: 30)
+        logger.info("Notch shown width=\(width) height=\(height)")
     }
+}
+
+private final class DismissibleNotchView: NSView {
+    var onDismiss: (() -> Void)?
+    override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
+    override func mouseDown(with event: NSEvent) { onDismiss?() }
+    override func accessibilityPerformPress() -> Bool { onDismiss?(); return true }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }
 
 final class WaveformView: NSView {
@@ -84,10 +113,10 @@ final class WaveformView: NSView {
     var phase: CGFloat = 0
     override func draw(_ dirtyRect: NSRect) {
         NSColor.controlAccentColor.setFill()
-        for index in 0..<18 {
-            let x = CGFloat(index) * 6
-            let height = active ? 6 + abs(sin(phase + CGFloat(index) * 0.6)) * 20 : 5
-            NSBezierPath(roundedRect: CGRect(x: x, y: (bounds.height - height) / 2, width: 3, height: height), xRadius: 1.5, yRadius: 1.5).fill()
+        for index in 0..<7 {
+            let x = CGFloat(index) * bounds.width / 7
+            let height = active ? 3 + abs(sin(phase + CGFloat(index) * 0.6)) * (bounds.height - 3) : 3
+            NSBezierPath(roundedRect: CGRect(x: x, y: (bounds.height - height) / 2, width: 2, height: height), xRadius: 1, yRadius: 1).fill()
         }
     }
 }

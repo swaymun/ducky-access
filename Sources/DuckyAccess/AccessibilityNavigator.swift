@@ -1,5 +1,6 @@
 import ApplicationServices
 import AppKit
+import OSLog
 
 struct AccessibilityHint {
     let code: String
@@ -15,6 +16,8 @@ final class AccessibilityNavigator {
     private var hints: [AccessibilityHint] = []
     private var window: NSPanel?
     private var overlay: HintOverlayView?
+    var onError: ((String) -> Void)?
+    private let logger = Logger(subsystem: "com.swaymun.ducky-access", category: "navigation")
 
     func toggle() {
         active ? close() : show()
@@ -58,13 +61,16 @@ final class AccessibilityNavigator {
 
     private func show() {
         guard AXIsProcessTrusted() else {
+            logger.error("NAV blocked: Accessibility permission is not valid for this build")
+            onError?("Re-add /Applications/DuckyAccess.app in Privacy & Security → Accessibility, enable it, then relaunch.")
             NSSound.beep()
             return
         }
         guard let app = NSWorkspace.shared.frontmostApplication else { return }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         hints = collect(from: axApp)
-        guard !hints.isEmpty else { return }
+        logger.info("NAV collected hints=\(self.hints.count) destinationPID=\(app.processIdentifier)")
+        guard !hints.isEmpty else { onError?("No accessible controls found in the current app."); return }
         active = true
         prefix = ""
         let screen = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
@@ -93,7 +99,7 @@ final class AccessibilityNavigator {
             walk(root, into: &elements)
         }
         let unique = elements.filter { item in
-            item.1.width > 4 && item.1.height > 4 && !item.2.isEmpty
+            item.1.width > 4 && item.1.height > 4
         }.prefix(225)
         return unique.enumerated().map { index, item in
             let code = String(alphabet[index / 15]) + String(alphabet[index % 15])
@@ -150,8 +156,14 @@ final class AccessibilityNavigator {
         var roleValue: CFTypeRef?
         _ = AXUIElementCopyAttributeValue(hint.element, kAXRoleAttribute as CFString, &roleValue)
         let role = roleValue as? String ?? ""
-        let action = role == "AXTextField" || role == "AXTextArea" ? kAXFocusedAttribute : kAXPressAction
-        if AXUIElementPerformAction(hint.element, action as CFString) != .success { NSSound.beep() }
+        let result: AXError
+        if role == "AXTextField" || role == "AXTextArea" || role == "AXComboBox" {
+            result = AXUIElementSetAttributeValue(hint.element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        } else {
+            result = AXUIElementPerformAction(hint.element, kAXPressAction as CFString)
+        }
+        logger.info("NAV activate role=\(role, privacy: .public) result=\(result.rawValue)")
+        if result != .success { NSSound.beep() }
     }
 }
 

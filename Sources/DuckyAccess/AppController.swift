@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import ServiceManagement
+import OSLog
 
 final class DuckyAccessController: NSObject {
     let detector = DuckyPadDetector()
@@ -12,6 +13,7 @@ final class DuckyAccessController: NSObject {
     let history = HistoryStore()
     let notch = NotchPanelController()
     let help = HelpPanelController()
+    let textInserter = TextInserter()
 
     private var statusItem: NSStatusItem!
     private var menu = NSMenu()
@@ -23,6 +25,9 @@ final class DuckyAccessController: NSObject {
     private var usage: [UsageWindow] = []
     private var status: BridgeStatus = .starting
     private var lastError: String?
+    private var permissions = ControlPermissions.read()
+    private var permissionTimer: Timer?
+    private let logger = Logger(subsystem: "com.swaymun.ducky-access", category: "controls")
 
     func start(showHelpOnLaunch: Bool = false) {
         NSApp.setActivationPolicy(.accessory)
@@ -34,6 +39,7 @@ final class DuckyAccessController: NSObject {
             self?.rebuildMenu()
         }
         keyboard.onAction = { [weak self] action in self?.handle(action) }
+        navigator.onError = { [weak self] message in self?.lastError = message; self?.rebuildMenu() }
         appServer.onReady = { [weak self] in self?.rebuildMenu() }
         appServer.onModels = { [weak self] models in self?.availableModels = models; self?.rebuildMenu() }
         appServer.onUsage = { [weak self] usage in self?.usage = usage; self?.rebuildMenu() }
@@ -51,6 +57,16 @@ final class DuckyAccessController: NSObject {
         requestMicrophoneAccess()
         try? SMAppService.mainApp.register()
         rebuildMenu()
+        logPermissions()
+        permissionTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let current = ControlPermissions.read()
+            guard current != self.permissions else { return }
+            self.permissions = current
+            self.logPermissions()
+            self.keyboard.refreshPermissions()
+            self.rebuildMenu()
+        }
         if showHelpOnLaunch {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.help.show() }
         }
@@ -67,6 +83,7 @@ final class DuckyAccessController: NSObject {
     }
 
     private func handle(_ action: PadAction) {
+        logger.info("Handling pad action=\(String(describing: action), privacy: .public)")
         switch action {
         case .hint(let letter): navigator.handle(letter)
         case .navigate: navigator.toggle()
@@ -87,7 +104,9 @@ final class DuckyAccessController: NSObject {
 
     private func toggleRecording(_ mode: RecordingMode) {
         if recordingMode != nil { stopRecording(); return }
+        guard status != .formatting else { NSSound.beep(); return }
         guard speech.modelReady else { NSSound.beep(); lastError = "Parakeet is still loading"; rebuildMenu(); return }
+        lastError = nil
         recordingMode = mode
         status = .recording
         notch.show(mode: mode)
@@ -116,16 +135,25 @@ final class DuckyAccessController: NSObject {
                 case .success(let value):
                     let audioData = value.audioURL.flatMap { try? Data(contentsOf: $0) }
                     if let url = value.audioURL { try? FileManager.default.removeItem(at: url) }
+                    guard !value.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        self.status = .ready
+                        self.notch.showResult("", status: "No speech detected")
+                        self.rebuildMenu()
+                        return
+                    }
                     if mode == .dictate {
                         self.notch.showResult(value.text, status: "Formatting…")
                         self.appServer.format(value.text, model: self.model, effort: self.effort, serviceTier: self.serviceTier) { formatted in
                             DispatchQueue.main.async {
                                 switch formatted {
                                 case .success(let text):
-                                    self.history.add(raw: value.text, formatted: text, mode: mode, audioData: audioData, duration: value.duration, error: nil)
-                                    let inserted = self.insert(text)
-                                    self.notch.showResult(text, status: inserted ? "Inserted" : "Copied")
-                                    self.status = .ready
+                                    self.textInserter.insert(text) { outcome in
+                                        self.history.add(raw: value.text, formatted: text, mode: mode, audioData: audioData, duration: value.duration, error: outcome.detail)
+                                        self.notch.showResult(text, status: outcome.title)
+                                        self.lastError = outcome.detail
+                                        self.status = outcome.detail == nil ? .ready : .error
+                                        self.rebuildMenu()
+                                    }
                                 case .failure(let error):
                                     self.history.add(raw: value.text, formatted: nil, mode: mode, audioData: audioData, duration: value.duration, error: error.localizedDescription)
                                     self.notch.showResult(value.text, status: "Raw transcript")
@@ -159,21 +187,8 @@ final class DuckyAccessController: NSObject {
         rebuildMenu()
     }
 
-    @discardableResult
-    private func insert(_ text: String) -> Bool {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        let pasteboard = NSPasteboard.general
-        let old = pasteboard.string(forType: .string)
-        pasteboard.clearContents(); pasteboard.setString(text, forType: .string)
-        let commandV = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true)
-        commandV?.flags = .maskCommand; commandV?.post(tap: .cghidEventTap)
-        let commandVUp = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false)
-        commandVUp?.flags = .maskCommand; commandVUp?.post(tap: .cghidEventTap)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            pasteboard.clearContents()
-            if let old { pasteboard.setString(old, forType: .string) }
-        }
-        return commandV != nil && commandVUp != nil
+    private func logPermissions() {
+        logger.info("Permissions accessibility=\(self.permissions.accessibility) keyboardOutput=\(self.permissions.keyboardOutput) inputMonitoring=\(self.permissions.inputMonitoring)")
     }
 
     private func execute(_ result: Result<AppServerClient.JSON, Error>) -> String {
@@ -207,6 +222,7 @@ final class DuckyAccessController: NSObject {
     }
 
     @objc func showHelp(_ sender: Any?) { help.show() }
+    @objc func repairPermissions(_ sender: Any?) { ControlPermissions.openSettings() }
     @objc func showHistory(_ sender: Any?) { if let url = try? history.writeHTML() { NSWorkspace.shared.open(url) } }
     @objc func quit(_ sender: Any?) { appSwitcher.cancel(); navigator.close(); keyboard.stop(); appServer.stop(); NSApp.terminate(nil) }
     @objc func selectModel(_ sender: NSMenuItem) { if let value = sender.representedObject as? String { model = value; rebuildMenu() } }
@@ -222,6 +238,13 @@ final class DuckyAccessController: NSObject {
         case 3: if let url = history.audioURL(for: record) { NSWorkspace.shared.open(url) }
         case 4: showHistory(nil)
         case 5: history.delete(id); rebuildMenu()
+        case 6:
+            let text = record.formattedText ?? record.rawText
+            textInserter.insert(text) { [weak self] outcome in
+                self?.notch.showResult(text, status: outcome.title)
+                self?.lastError = outcome.detail
+                self?.rebuildMenu()
+            }
         default: break
         }
     }
@@ -233,9 +256,13 @@ final class DuckyAccessController: NSObject {
         let menu = NSMenu()
         self.menu = menu
         statusItem?.menu = menu
-        let title = NSMenuItem(title: "Ducky Access — \(status.rawValue)", action: nil, keyEquivalent: "")
+        let statusText = permissions.needsRepair && status == .ready ? "Accessibility needed" : status.rawValue
+        let title = NSMenuItem(title: "Ducky Access — \(statusText)", action: nil, keyEquivalent: "")
         title.isEnabled = false; menu.addItem(title)
         let pad = NSMenuItem(title: detector.connected ? "Pad: Connected" : "Pad: Disconnected", action: nil, keyEquivalent: ""); pad.isEnabled = false; menu.addItem(pad)
+        let permissionItem = NSMenuItem(title: permissions.needsRepair ? "Enable navigation & text insertion…" : "Navigation & text insertion: Allowed", action: permissions.needsRepair ? #selector(repairPermissions(_:)) : nil, keyEquivalent: "")
+        permissionItem.target = self
+        menu.addItem(permissionItem)
         menu.addItem(.separator())
         menu.addItem(submenu("Model: \(modelDisplay(model))", values: availableModels.isEmpty ? [model] : availableModels, selected: model, action: #selector(selectModel(_:))))
         menu.addItem(submenu("Reasoning: \(effort.capitalized)", values: ["none", "low", "medium", "high", "xhigh"], selected: effort, action: #selector(selectEffort(_:))))
@@ -272,7 +299,7 @@ final class DuckyAccessController: NSObject {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.toolTip = record.formattedText ?? record.rawText
         let child = NSMenu(); let id = record.id.uuidString
-        for (title, tag) in [("Copy formatted", 1), ("Copy raw", 2), ("Play recording", 3), ("View all history", 4), ("Delete", 5)] {
+        for (title, tag) in [("Insert formatted", 6), ("Copy formatted", 1), ("Copy raw", 2), ("Play recording", 3), ("View all history", 4), ("Delete", 5)] {
             let action = NSMenuItem(title: title, action: #selector(dictationAction(_:)), keyEquivalent: ""); action.target = self; action.tag = tag; action.representedObject = id; child.addItem(action)
         }
         item.submenu = child; return item
