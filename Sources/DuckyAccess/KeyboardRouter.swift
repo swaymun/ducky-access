@@ -7,6 +7,7 @@ final class KeyboardRouter {
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var tapRetry: DispatchWorkItem?
+    private var tapRetryAttempts = 0
     private var modifiers: UInt8 = 0
     private var pressedKeys = Set<UInt32>()
     private var lastRoutedAt: [Int: TimeInterval] = [:]
@@ -40,6 +41,7 @@ final class KeyboardRouter {
     func stop() {
         tapRetry?.cancel()
         tapRetry = nil
+        tapRetryAttempts = 0
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         source = nil
@@ -132,12 +134,20 @@ final class KeyboardRouter {
             userInfo: context
         )
         guard let tap else {
-            logger.error("DuckyPad keyboard fallback unavailable; direct HID input remains active")
-            scheduleTapRetry()
+            tapRetryAttempts += 1
+            if tapRetryAttempts == 1 {
+                logger.error("DuckyPad keyboard fallback unavailable; direct HID input remains active")
+            }
+            if tapRetryAttempts <= 3 {
+                scheduleTapRetry()
+            } else if tapRetryAttempts == 4 {
+                logger.info("DuckyPad keyboard fallback disabled after retries; direct HID input remains active")
+            }
             return
         }
         tapRetry?.cancel()
         tapRetry = nil
+        tapRetryAttempts = 0
         source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         if let source { CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes) }
         CGEvent.tapEnable(tap: tap, enable: true)
