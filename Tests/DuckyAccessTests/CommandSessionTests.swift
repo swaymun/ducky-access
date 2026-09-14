@@ -9,7 +9,7 @@ final class CommandSessionTests: XCTestCase {
     func testLiveAppServerDynamicToolRoundTrip() throws {
         guard ProcessInfo.processInfo.environment["DUCKY_TEST_APP_SERVER"] == "1" else { throw XCTSkip("Set DUCKY_TEST_APP_SERVER=1 for the live model smoke test.") }
         let computer = SyntheticComputerRPC()
-        let session = CommandSession(computer: computer)
+        let session = CommandSession(computer: computer, permissionProfile: .fullAccess)
         let finished = expectation(description: "Live App Server command completes")
         session.onFinish = { outcome in
             XCTAssertNil(outcome.error, outcome.text)
@@ -223,9 +223,33 @@ final class CommandSessionTests: XCTestCase {
         XCTAssertTrue(NativeComputerControl.requiresNativeConfirmation("type_text", bundleID: "com.apple.TextEdit"))
     }
 
-    private func startedSession() -> (CommandSession, FakeRPC, FakeRPC) {
+    func testFullAccessKeepsSensitiveApprovalAndUsesNamedProfile() {
+        XCTAssertFalse(NativeComputerControl.requiresNativeConfirmation("press_key", bundleID: "com.google.Chrome", profile: .fullAccess))
+        let (run, server, computer) = startedSession(profile: .fullAccess)
+        defer { run.cancel() }
+        server.onRequest?(call(1, name: "get_app_state"))
+        computer.take("tools/call")?(.success([:]))
+        var requested = false
+        run.onApproval = { _, _ in requested = true }
+        server.onRequest?(call(2, name: "press_key", approval: true))
+        XCTAssertTrue(requested)
+        XCTAssertFalse(computer.requests.contains { $0.method == "tools/call" })
+    }
+
+    func testPermissionPreferencePersistsAndUnknownValuesFailSafe() throws {
+        let name = "DuckyAccessTests.permissions." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        XCTAssertEqual(CommandPermissionProfile.load(from: defaults), .askBeforeActions)
+        defaults.set(CommandPermissionProfile.fullAccess.rawValue, forKey: CommandPermissionProfile.defaultsKey)
+        XCTAssertEqual(CommandPermissionProfile.load(from: defaults), .fullAccess)
+        defaults.set("unknown", forKey: CommandPermissionProfile.defaultsKey)
+        XCTAssertEqual(CommandPermissionProfile.load(from: defaults), .askBeforeActions)
+    }
+
+    private func startedSession(profile: CommandPermissionProfile = .askBeforeActions) -> (CommandSession, FakeRPC, FakeRPC) {
         let server = FakeRPC(), computer = FakeRPC()
-        let run = CommandSession(server: server, computer: computer)
+        let run = CommandSession(server: server, computer: computer, permissionProfile: profile)
         run.start("do two steps", model: "test", effort: "low", serviceTier: "priority")
         computer.take("initialize")?(.success([:]))
         let specs: [JSON] = ["get_app_state", "press_key"].map { ["name": $0, "description": "test", "inputSchema": ["type": "object", "properties": ["app": ["type": "string"]], "required": ["app"]]] }
@@ -233,6 +257,8 @@ final class CommandSessionTests: XCTestCase {
         server.take("initialize")?(.success([:]))
         server.take("config/read")?(.success(["config": ["mcp_servers": ["unrelated": ["enabled": true]]]]))
         let threadParams = server.requests.first { $0.method == "thread/start" }?.params
+        XCTAssertEqual(threadParams?["permissions"] as? String, profile.codexPermission)
+        XCTAssertNil(threadParams?["sandbox"])
         let overrides = threadParams?["config"] as? JSON
         let disabled = overrides?["mcp_servers"] as? [String: JSON]
         XCTAssertEqual(disabled?["unrelated"]?["enabled"] as? Bool, false)

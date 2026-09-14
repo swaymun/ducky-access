@@ -26,6 +26,7 @@ final class DuckyAccessController: NSObject {
     private var model = "gpt-5.6-luna"
     private var effort = "low"
     private var serviceTier = "priority"
+    private var commandPermissions = CommandPermissionProfile.load()
     private var availableModels: [String] = []
     private var usage: [UsageWindow] = []
     private var status: BridgeStatus = .starting
@@ -241,7 +242,7 @@ final class DuckyAccessController: NSObject {
 
     private func runMultiStepCommand(_ text: String, id: UUID, audioData: Data?, duration: TimeInterval) {
         appSwitcher.cancel(); navigator.close()
-        let session = CommandSession()
+        let session = CommandSession(permissionProfile: commandPermissions)
         commandSession = session
         session.onProgress = { [weak self] message in
             guard let self, self.commandID == id else { return }
@@ -337,6 +338,13 @@ final class DuckyAccessController: NSObject {
     @objc func selectModel(_ sender: NSMenuItem) { if let value = sender.representedObject as? String { model = value; rebuildMenu() } }
     @objc func selectEffort(_ sender: NSMenuItem) { if let value = sender.representedObject as? String { effort = value; rebuildMenu() } }
     @objc func selectSpeed(_ sender: NSMenuItem) { if let value = sender.representedObject as? String { serviceTier = value == "Fast" ? "priority" : "default"; rebuildMenu() } }
+    @objc func selectCommandPermissions(_ sender: NSMenuItem) {
+        guard commandID == nil, let value = sender.representedObject as? String,
+              let profile = CommandPermissionProfile(rawValue: value) else { return }
+        commandPermissions = profile
+        UserDefaults.standard.set(profile.rawValue, forKey: CommandPermissionProfile.defaultsKey)
+        rebuildMenu()
+    }
     @objc func recordFromMenu(_ sender: Any?) { toggleRecording(.dictate) }
     @objc func clearHistory(_ sender: Any?) { if NSAlert.showConfirm("Delete all dictations?", informative: "This removes saved text and recordings.") { history.clear(); rebuildMenu() } }
     @objc func dictationAction(_ sender: NSMenuItem) {
@@ -376,6 +384,11 @@ final class DuckyAccessController: NSObject {
         menu.addItem(submenu("Model: \(modelDisplay(model))", values: availableModels.isEmpty ? [model] : availableModels, selected: model, action: #selector(selectModel(_:))))
         menu.addItem(submenu("Reasoning: \(effort.capitalized)", values: ["none", "low", "medium", "high", "xhigh"], selected: effort, action: #selector(selectEffort(_:))))
         menu.addItem(submenu("Speed: \(serviceTier == "priority" ? "Fast" : "Default")", values: ["Default", "Fast"], selected: serviceTier == "priority" ? "Fast" : "Default", action: #selector(selectSpeed(_:))))
+        let commandPermissionItem = submenu("Permissions: \(commandPermissions.rawValue)", values: CommandPermissionProfile.allCases.map(\.rawValue), selected: commandPermissions.rawValue, action: #selector(selectCommandPermissions(_:)))
+        commandPermissionItem.toolTip = "Full Access runs routine actions without per-app prompts. Sensitive actions still ask. Applies to the next command; macOS permissions are separate."
+        commandPermissionItem.submenu?.autoenablesItems = false
+        commandPermissionItem.submenu?.items.forEach { $0.isEnabled = commandID == nil }
+        menu.addItem(commandPermissionItem)
         let usageItem = NSMenuItem(title: usageTitle(), action: nil, keyEquivalent: ""); usageItem.isEnabled = false; menu.addItem(usageItem)
         if let lastError { let errorItem = NSMenuItem(title: "⚠ \(lastError)", action: nil, keyEquivalent: ""); errorItem.isEnabled = false; menu.addItem(errorItem) }
         menu.addItem(.separator())

@@ -9,6 +9,7 @@ final class CommandSession {
     var onFinish: ((Outcome) -> Void)?
     private let server: CommandRPC
     private let computer: CommandRPC
+    private let permissionProfile: CommandPermissionProfile
     private(set) var active = false
     private var started = false
     private var threadID: String?
@@ -27,8 +28,10 @@ final class CommandSession {
     static let summaryKey = "ducky_step_summary"
     static let approvalKey = "ducky_requires_confirmation"
 
-    init(server: CommandRPC = JSONRPCProcess(), computer: CommandRPC = NativeComputerControl()) {
+    init(server: CommandRPC = JSONRPCProcess(), computer: CommandRPC = NativeComputerControl(), permissionProfile: CommandPermissionProfile = .askBeforeActions) {
         self.server = server; self.computer = computer
+        self.permissionProfile = permissionProfile
+        (computer as? NativeComputerControl)?.permissionProfile = permissionProfile
     }
 
     func start(_ text: String, model: String, effort: String, serviceTier: String) {
@@ -91,7 +94,7 @@ final class CommandSession {
                 let focused = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
                 self.server.request("thread/start", [
                     "ephemeral": true, "model": model, "serviceTier": serviceTier,
-                    "approvalPolicy": "never", "sandbox": "read-only", "environments": [],
+                    "approvalPolicy": "never", "permissions": self.permissionProfile.codexPermission, "environments": [],
                     "config": ["mcp_servers": disabled], "dynamicTools": specs,
                     "developerInstructions": Self.instructions
                 ]) { [weak self] result in

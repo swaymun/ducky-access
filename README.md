@@ -127,10 +127,13 @@ again to stop**. Cancellation blocks further tool calls immediately, interrupts
 the agent, and closes this command's App Server process. An action already dispatched may
 finish; completed actions cannot be undone. Runs are limited to 40 tool calls
 and three minutes. Sensitive steps request native confirmation; Cancel is the
-default. In this experimental version, actions outside Calculator and TextEdit
-also require confirmation on each step, and TextEdit text insertion requires
-confirmation. These native checks cannot be disabled by the model. This is an
-intentional safety limit while real-app coverage is expanded. A tool timeout stops the run instead of blindly retrying an action
+default. **Permissions → Ask before actions** additionally confirms actions
+outside Calculator/TextEdit and text insertion in TextEdit. **Permissions →
+Full Access** removes those extra routine prompts and selects Codex's
+`:danger-full-access` permission profile. Sensitive actions still ask, and
+macOS permissions are separate. The choice persists and applies to the next
+command; the model cannot change it. Shell tools and unrelated connectors stay
+disabled in both modes. A tool timeout stops the run instead of blindly retrying an action
 that might already have completed.
 
 The Codex executable is reused from `/Applications/ChatGPT.app`, not
