@@ -149,7 +149,7 @@ final class DuckyAccessController: NSObject {
                                 case .success(let text):
                                     self.textInserter.insert(text) { outcome in
                                         self.history.add(raw: value.text, formatted: text, mode: mode, audioData: audioData, duration: value.duration, error: outcome.detail)
-                                        self.notch.showResult(text, status: outcome.title)
+                                        self.notch.showResult(text, status: outcome.title, dismissAfter: 2.5)
                                         self.lastError = outcome.detail
                                         self.status = outcome.detail == nil ? .ready : .error
                                         self.rebuildMenu()
@@ -167,7 +167,7 @@ final class DuckyAccessController: NSObject {
                             DispatchQueue.main.async {
                                 let resultText = self.execute(routed)
                                 self.history.add(raw: value.text, formatted: resultText, mode: mode, audioData: audioData, duration: value.duration, error: nil)
-                                self.notch.showResult(resultText, status: "Command")
+                                self.notch.showResult(resultText, status: "Command", dismissAfter: 2.5)
                                 self.status = .ready
                                 self.rebuildMenu()
                             }
@@ -241,7 +241,7 @@ final class DuckyAccessController: NSObject {
         case 6:
             let text = record.formattedText ?? record.rawText
             textInserter.insert(text) { [weak self] outcome in
-                self?.notch.showResult(text, status: outcome.title)
+                self?.notch.showResult(text, status: outcome.title, dismissAfter: 2.5)
                 self?.lastError = outcome.detail
                 self?.rebuildMenu()
             }

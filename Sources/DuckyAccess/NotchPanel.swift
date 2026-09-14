@@ -7,6 +7,7 @@ final class NotchPanelController {
     private let textLabel = NSTextField(labelWithString: "")
     private let waveform = WaveformView(frame: .zero)
     private var timer: Timer?
+    private var dismissWork: DispatchWorkItem?
     private var dismissed = false
     private let logger = Logger(subsystem: "com.swaymun.ducky-access", category: "notch")
 
@@ -48,6 +49,8 @@ final class NotchPanelController {
     }
 
     func show(mode: RecordingMode) {
+        dismissWork?.cancel()
+        dismissWork = nil
         dismissed = false
         modeLabel.stringValue = mode == .dictate ? "Dictation" : "Command"
         textLabel.stringValue = "Listening…"
@@ -65,7 +68,9 @@ final class NotchPanelController {
         textLabel.stringValue = text.isEmpty ? "Listening…" : text
     }
 
-    func showResult(_ text: String, status: String) {
+    func showResult(_ text: String, status: String, dismissAfter: TimeInterval? = nil) {
+        dismissWork?.cancel()
+        dismissWork = nil
         timer?.invalidate(); timer = nil
         waveform.active = false
         modeLabel.stringValue = status
@@ -74,10 +79,20 @@ final class NotchPanelController {
         if !dismissed {
             position()
             panel.orderFrontRegardless()
+            if let dismissAfter {
+                let work = DispatchWorkItem { [weak self] in
+                    self?.hide()
+                    self?.logger.info("Notch automatically dismissed")
+                }
+                dismissWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + dismissAfter, execute: work)
+            }
         }
     }
 
     func hide() {
+        dismissWork?.cancel()
+        dismissWork = nil
         timer?.invalidate(); timer = nil
         panel.orderOut(nil)
     }

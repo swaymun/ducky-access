@@ -14,8 +14,10 @@ Ducky Access is a small, local-first macOS menu-bar bridge for a wired duckyPad 
 - Local HTML history viewer with raw text, cleaned text, and recordings.
 
 The black dictation preview extends below the built-in notch at its measured
-width (or 200 points on a display without a notch). Click it to dismiss the
-preview; this does not cancel recording or insertion.
+width (or 200 points on a display without a notch). It stays visible while
+listening and formatting, then dismisses 2.5 seconds after insertion, copying,
+or command completion. Click to dismiss it sooner; this does not cancel
+recording or insertion.
 
 ## Build
 
