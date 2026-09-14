@@ -89,12 +89,14 @@ final class DuckyPadDetector {
             let detector = Unmanaged<DuckyPadDetector>.fromOpaque(context).takeUnretainedValue()
             detector.receiveReport(report, length: reportLength, reportID: reportID)
         }, context)
+        IOHIDDeviceScheduleWithRunLoop(device, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
         logger.info("Attached DuckyPad keyboard interface openResult=\(openResult, privacy: .public)")
     }
 
     private func detach(_ device: IOHIDDevice) {
         let key = ObjectIdentifier(device)
         guard reportBuffers[key] != nil else { return }
+        IOHIDDeviceUnscheduleFromRunLoop(device, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
         IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone))
         reportBuffers.removeValue(forKey: key)?.deallocate()
         devices.removeValue(forKey: key)
