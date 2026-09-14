@@ -23,7 +23,7 @@ ditto build/DuckyAccess.app /Applications/DuckyAccess.app
 open /Applications/DuckyAccess.app
 ```
 
-The first launch requests Accessibility, Input Monitoring, and Microphone permissions. FluidAudio downloads the Parakeet model into its normal application-support cache. The app does not ship model weights.
+Grant Accessibility and Input Monitoring to `DuckyAccess` in System Settings; the app requests Microphone access, installs itself as a login item, and starts the global key listener. FluidAudio downloads the Parakeet model into its normal application-support cache. The app does not ship model weights.
 
 For a quick local verification after the first build:
 
@@ -55,4 +55,4 @@ Audio, raw transcripts, cleaned transcripts, and recordings remain local until d
 
 ## License
 
-This project is MIT-licensed. FluidAudio and its model weights retain their own licenses; see their upstream repository and model card.
+This project is MIT-licensed. It builds on the [official duckyPad Configurator](https://github.com/duckyPad/duckyPad-Configurator), [DuckyScript reference](https://github.com/dekuNukem/duckyPad-Pro/blob/master/doc/duckyscript_info.md), [FluidAudio](https://github.com/FluidInference/FluidAudio), and the [Parakeet EOU 120M model card](https://huggingface.co/FluidInference/parakeet-realtime-eou-120m-coreml). Those projects and model weights retain their own licenses.
