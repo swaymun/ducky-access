@@ -165,6 +165,13 @@ final class AppServerClient {
                                 DispatchQueue.main.async { completion(.success(text)) }
                             }
                         }
+                        self.queue.asyncAfter(deadline: .now() + 20) { [weak self] in
+                            guard let self,
+                                  let timedOut = self.pendingTurns.removeValue(forKey: turnID) else { return }
+                            DispatchQueue.main.async {
+                                timedOut(.failure(ClientError.unavailable("Codex App Server timed out")))
+                            }
+                        }
                     }
                 }
             }
@@ -277,6 +284,12 @@ final class AppServerClient {
                 }
                 guard hasMessage, let completion = pendingTurns.removeValue(forKey: turnID) else { continue }
                 DispatchQueue.main.async { completion(.success(params)) }
+            } else if object["method"] as? String == "turn/failed",
+                      let params = object["params"] as? JSON,
+                      let turnID = (params["turnId"] as? String) ?? ((params["turn"] as? JSON)?["id"] as? String),
+                      let completion = pendingTurns.removeValue(forKey: turnID) {
+                let error = (params["error"] as? JSON)?["message"] as? String ?? "Codex App Server could not finish the request"
+                DispatchQueue.main.async { completion(.failure(ClientError.unavailable(error))) }
             } else if object["method"] as? String == "item/completed",
                       let params = object["params"] as? JSON,
                       let turnID = params["turnId"] as? String,

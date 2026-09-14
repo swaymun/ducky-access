@@ -1,11 +1,21 @@
-import Foundation
+import AppKit
+import Carbon.HIToolbox
 import OSLog
 
 final class KeyboardRouter {
     private var started = false
+    private var tap: CFMachPort?
+    private var source: CFRunLoopSource?
     private var modifiers: UInt8 = 0
     private var pressedKeys = Set<UInt32>()
+    private var lastRoutedAt: [Int: TimeInterval] = [:]
     private let logger = Logger(subsystem: "com.swaymun.ducky-access", category: "keyboard")
+    private let functionByKeyCode: [CGKeyCode: Int] = [
+        122: 1, 120: 2, 99: 3, 118: 4, 96: 5, 97: 6, 98: 7, 100: 8,
+        101: 9, 109: 10, 103: 11, 111: 12, 105: 13, 107: 14, 113: 15,
+        106: 16, 64: 17, 79: 18, 80: 19, 90: 20, 87: 21, 88: 22, 110: 23,
+        117: 24
+    ]
 
     var onAction: ((PadAction) -> Void)?
 
@@ -23,11 +33,17 @@ final class KeyboardRouter {
         detector.onInputValue = { [weak self] usage, value in
             self?.receive(usage: usage, value: value)
         }
+        startEventTap()
     }
 
     func stop() {
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+        source = nil
+        tap = nil
         modifiers = 0
         pressedKeys.removeAll()
+        lastRoutedAt.removeAll()
         started = false
     }
 
@@ -41,18 +57,22 @@ final class KeyboardRouter {
             if value == 0 {
                 pressedKeys.remove(usage)
             } else if pressedKeys.insert(usage).inserted {
-                route(usage: UInt8(usage), modifiers: modifiers)
+                guard let function = functionByUsage[UInt8(usage)] else { return }
+                _ = route(function: function, modifiers: modifiers)
             }
         }
     }
 
-    private func route(usage: UInt8, modifiers: UInt8) {
-        guard let function = functionByUsage[usage] else { return }
+    private func route(function: Int, modifiers: UInt8) -> Bool {
         let allModifiers = modifiers == 0x0F // Ctrl + Shift + Alt + GUI
         let encoderModifiers = modifiers == 0x07 // Ctrl + Shift + Alt
-        guard allModifiers || encoderModifiers else { return }
+        guard allModifiers || encoderModifiers else { return false }
 
-        logger.info("Received DuckyPad HID usage=\(usage) function=\(function) modifiers=\(modifiers)")
+        let now = Date.timeIntervalSinceReferenceDate
+        if let previous = lastRoutedAt[function], now - previous < 0.25 { return true }
+        lastRoutedAt[function] = now
+
+        logger.info("Received DuckyPad input function=\(function) modifiers=\(modifiers)")
 
         if allModifiers {
             let letters = Array("ABCDEFGHIJKLMNO")
@@ -73,9 +93,47 @@ final class KeyboardRouter {
             default: break
             }
         }
+        return true
     }
 
     private func emit(_ action: PadAction) {
         DispatchQueue.main.async { [weak self] in self?.onAction?(action) }
+    }
+
+    private func startEventTap() {
+        guard tap == nil else { return }
+        let mask = (CGEventMask(1) << CGEventType.keyDown.rawValue) | (CGEventMask(1) << CGEventType.keyUp.rawValue)
+        let context = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: mask,
+            callback: { _, type, event, context in
+                guard let context else { return Unmanaged.passUnretained(event) }
+                let router = Unmanaged<KeyboardRouter>.fromOpaque(context).takeUnretainedValue()
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    if let tap = router.tap { CGEvent.tapEnable(tap: tap, enable: true) }
+                    return Unmanaged.passUnretained(event)
+                }
+                guard type == .keyDown || type == .keyUp else { return Unmanaged.passUnretained(event) }
+                let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+                guard let function = router.functionByKeyCode[code] else { return Unmanaged.passUnretained(event) }
+                let flags = event.flags.intersection([.maskShift, .maskControl, .maskCommand, .maskAlternate])
+                let allModifiers: UInt8 = flags == [.maskShift, .maskControl, .maskCommand, .maskAlternate] ? 0x0F : 0
+                let encoderModifiers: UInt8 = flags == [.maskShift, .maskControl, .maskAlternate] ? 0x07 : 0
+                guard allModifiers != 0 || encoderModifiers != 0 else { return Unmanaged.passUnretained(event) }
+                if type == .keyDown { _ = router.route(function: function, modifiers: allModifiers != 0 ? allModifiers : encoderModifiers) }
+                return nil
+            },
+            userInfo: context
+        )
+        guard let tap else {
+            logger.error("DuckyPad keyboard fallback unavailable; direct HID input remains active")
+            return
+        }
+        source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        if let source { CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes) }
+        CGEvent.tapEnable(tap: tap, enable: true)
     }
 }
