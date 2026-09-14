@@ -44,8 +44,8 @@ final class DuckyAccessController: NSObject {
                 self?.rebuildMenu()
             }
         }
+        keyboard.start(using: detector)
         detector.start()
-        keyboard.start()
         appServer.start()
         speech.warm()
         requestMicrophoneAccess()
@@ -117,13 +117,14 @@ final class DuckyAccessController: NSObject {
                     let audioData = value.audioURL.flatMap { try? Data(contentsOf: $0) }
                     if let url = value.audioURL { try? FileManager.default.removeItem(at: url) }
                     if mode == .dictate {
+                        self.notch.showResult(value.text, status: "Formatting…")
                         self.appServer.format(value.text, model: self.model, effort: self.effort, serviceTier: self.serviceTier) { formatted in
                             DispatchQueue.main.async {
                                 switch formatted {
                                 case .success(let text):
                                     self.history.add(raw: value.text, formatted: text, mode: mode, audioData: audioData, duration: value.duration, error: nil)
-                                    self.insert(text)
-                                    self.notch.showResult(text, status: "Inserted")
+                                    let inserted = self.insert(text)
+                                    self.notch.showResult(text, status: inserted ? "Inserted" : "Copied")
                                     self.status = .ready
                                 case .failure(let error):
                                     self.history.add(raw: value.text, formatted: nil, mode: mode, audioData: audioData, duration: value.duration, error: error.localizedDescription)
@@ -158,12 +159,9 @@ final class DuckyAccessController: NSObject {
         rebuildMenu()
     }
 
-    private func insert(_ text: String) {
-        guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication else { return }
-        let axApp = AXUIElementCreateApplication(app.processIdentifier)
-        var focused: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &focused) == .success else { return }
-        guard focused != nil else { return }
+    @discardableResult
+    private func insert(_ text: String) -> Bool {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         let pasteboard = NSPasteboard.general
         let old = pasteboard.string(forType: .string)
         pasteboard.clearContents(); pasteboard.setString(text, forType: .string)
@@ -171,10 +169,11 @@ final class DuckyAccessController: NSObject {
         commandV?.flags = .maskCommand; commandV?.post(tap: .cghidEventTap)
         let commandVUp = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false)
         commandVUp?.flags = .maskCommand; commandVUp?.post(tap: .cghidEventTap)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             pasteboard.clearContents()
             if let old { pasteboard.setString(old, forType: .string) }
         }
+        return commandV != nil && commandVUp != nil
     }
 
     private func execute(_ result: Result<AppServerClient.JSON, Error>) -> String {

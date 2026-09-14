@@ -23,7 +23,7 @@ ditto build/DuckyAccess.app /Applications/DuckyAccess.app
 open /Applications/DuckyAccess.app
 ```
 
-Grant Accessibility and Input Monitoring to `DuckyAccess` in System Settings; the app requests Microphone access, installs itself as a login item, and starts the global key listener. FluidAudio downloads the Parakeet model into its normal application-support cache. The app does not ship model weights.
+Grant Accessibility to `DuckyAccess` in System Settings; the app requests Microphone access, installs itself as a login item, and listens directly to the matched wired DuckyPad HID interface. FluidAudio downloads the Parakeet model into its normal application-support cache. The app does not ship model weights.
 
 For a quick local verification after the first build:
 
@@ -43,7 +43,7 @@ Import the packaged profile with the official duckyPad Configurator, then save i
 | K | L | M | N | O |
 | NAV | DICT | CMD | BKSP | ESC |
 
-The profile emits reserved modifier/function-key chords. The bridge consumes those chords and does not type the visible letters into the focused app.
+The profile emits reserved modifier/function-key chords. The bridge reads the matched DuckyPad HID interface directly and does not type the visible letters into the focused app.
 
 ## Demo
 

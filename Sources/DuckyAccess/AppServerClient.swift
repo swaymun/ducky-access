@@ -24,6 +24,7 @@ final class AppServerClient {
     private var pending: [Int: Completion] = [:]
     private var pendingOnQueue = Set<Int>()
     private var pendingTurns: [String: Completion] = [:]
+    private var messageDeltas: [String: String] = [:]
 
     private(set) var ready = false
     var onReady: (() -> Void)?
@@ -56,10 +57,14 @@ final class AppServerClient {
         runEphemeral(prompt: prompt, model: model, effort: effort, serviceTier: serviceTier) { result in
             switch result {
             case .success(let value):
-                if let object = Self.jsonObject(from: value), let formatted = object["text"] as? String {
-                    completion(.success(formatted))
+                if let object = Self.jsonObject(from: value),
+                   let formatted = object["text"] as? String,
+                   !formatted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    completion(.success(formatted.trimmingCharacters(in: .whitespacesAndNewlines)))
                 } else {
-                    completion(.success(value.trimmingCharacters(in: .whitespacesAndNewlines)))
+                    let fallback = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if fallback.isEmpty { completion(.failure(ClientError.invalidResponse)) }
+                    else { completion(.success(fallback)) }
                 }
             case .failure(let error): completion(.failure(error))
             }
@@ -251,18 +256,42 @@ final class AppServerClient {
                     let deliver = { completion(.success(result)) }
                     if deliverOnQueue { deliver() } else { DispatchQueue.main.async(execute: deliver) }
                 }
+            } else if object["method"] as? String == "item/agentMessage/delta",
+                      let params = object["params"] as? JSON,
+                      let turnID = params["turnId"] as? String,
+                      pendingTurns[turnID] != nil,
+                      let itemID = params["itemId"] as? String,
+                      let delta = params["delta"] as? String {
+                messageDeltas[itemID, default: ""] += delta
             } else if object["method"] as? String == "turn/completed", let params = object["params"] as? JSON,
                       let turnID = (params["turnId"] as? String) ?? ((params["turn"] as? JSON)?["id"] as? String),
-                      let completion = pendingTurns.removeValue(forKey: turnID) {
+                      pendingTurns[turnID] != nil {
+                // Some server versions send turn/completed before
+                // item/completed. Keep the request pending when the turn
+                // carries no message text yet; the item event can still
+                // resolve the accumulated deltas below.
+                let items = ((params["turn"] as? JSON)?["items"] as? [[String: Any]]) ?? []
+                let hasMessage = items.contains {
+                    ($0["type"] as? String) == "agentMessage" &&
+                    !(($0["text"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+                guard hasMessage, let completion = pendingTurns.removeValue(forKey: turnID) else { continue }
                 DispatchQueue.main.async { completion(.success(params)) }
             } else if object["method"] as? String == "item/completed",
                       let params = object["params"] as? JSON,
                       let turnID = params["turnId"] as? String,
                       let item = params["item"] as? JSON,
-                      (item["type"] as? String) == "agentMessage",
-                      (item["phase"] as? String) == "final_answer",
-                      let completion = pendingTurns.removeValue(forKey: turnID) {
-                let response: JSON = ["turn": ["items": [item]]]
+                      (item["type"] as? String) == "agentMessage" {
+                var resolvedItem = item
+                if let itemID = item["id"] as? String,
+                   (item["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,
+                   let delta = messageDeltas.removeValue(forKey: itemID) {
+                    resolvedItem["text"] = delta
+                }
+                guard let text = resolvedItem["text"] as? String,
+                      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      let completion = pendingTurns.removeValue(forKey: turnID) else { continue }
+                let response: JSON = ["turn": ["items": [resolvedItem]]]
                 DispatchQueue.main.async { completion(.success(response)) }
             }
         }

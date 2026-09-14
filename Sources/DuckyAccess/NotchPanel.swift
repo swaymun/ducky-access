@@ -8,32 +8,37 @@ final class NotchPanelController {
     private var timer: Timer?
 
     init() {
-        panel = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 460, height: 104), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 500, height: 96), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.level = .floating
+        panel.level = .statusBar
+        panel.hasShadow = false
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        let visual = NSVisualEffectView(frame: panel.contentView?.bounds ?? .zero)
-        visual.material = .hudWindow
-        visual.blendingMode = .behindWindow
-        visual.state = .active
+        let visual = NSView(frame: panel.contentView?.bounds ?? .zero)
         visual.wantsLayer = true
-        visual.layer?.cornerRadius = 24
-        visual.layer?.masksToBounds = true
+        visual.layer?.backgroundColor = NSColor.black.cgColor
+        visual.layer?.cornerRadius = 25
+        visual.layer?.borderWidth = 1
+        visual.layer?.borderColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        visual.layer?.shadowColor = NSColor.black.cgColor
+        visual.layer?.shadowOpacity = 0.35
+        visual.layer?.shadowRadius = 14
+        visual.layer?.shadowOffset = CGSize(width: 0, height: -4)
+        visual.layer?.masksToBounds = false
         panel.contentView = visual
         modeLabel.font = .systemFont(ofSize: 12, weight: .semibold)
-        modeLabel.textColor = .secondaryLabelColor
+        modeLabel.textColor = NSColor.white.withAlphaComponent(0.62)
         textLabel.font = .systemFont(ofSize: 15, weight: .regular)
-        textLabel.textColor = .labelColor
+        textLabel.textColor = .white
         textLabel.lineBreakMode = .byTruncatingTail
         waveform.wantsLayer = true
         visual.addSubview(modeLabel)
         visual.addSubview(waveform)
         visual.addSubview(textLabel)
-        modeLabel.frame = CGRect(x: 24, y: 72, width: 410, height: 18)
-        waveform.frame = CGRect(x: 24, y: 28, width: 110, height: 28)
-        textLabel.frame = CGRect(x: 148, y: 29, width: 285, height: 28)
+        modeLabel.frame = CGRect(x: 26, y: 67, width: 448, height: 17)
+        waveform.frame = CGRect(x: 26, y: 30, width: 112, height: 28)
+        textLabel.frame = CGRect(x: 154, y: 30, width: 320, height: 28)
     }
 
     func show(mode: RecordingMode) {
@@ -70,7 +75,7 @@ final class NotchPanelController {
 
     private func position() {
         guard let screen = NSScreen.main else { return }
-        panel.setFrameOrigin(CGPoint(x: screen.frame.midX - panel.frame.width / 2, y: screen.frame.maxY - panel.frame.height - 20))
+        panel.setFrameOrigin(CGPoint(x: screen.frame.midX - panel.frame.width / 2, y: screen.frame.maxY - panel.frame.height))
     }
 }
 

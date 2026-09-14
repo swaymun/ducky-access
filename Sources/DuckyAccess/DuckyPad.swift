@@ -9,6 +9,7 @@ final class DuckyPadDetector {
     private var started = false
     private var pollTimer: Timer?
     var onChange: ((Bool) -> Void)?
+    var onInputValue: ((UInt32, Int64) -> Void)?
     private(set) var connected = false
 
     func start() {
@@ -34,6 +35,13 @@ final class DuckyPadDetector {
             }
         }, context)
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+        IOHIDManagerRegisterInputValueCallback(manager, { context, result, _, value in
+            guard result == kIOReturnSuccess, let context else { return }
+            let detector = Unmanaged<DuckyPadDetector>.fromOpaque(context).takeUnretainedValue()
+            let element = IOHIDValueGetElement(value)
+            guard IOHIDElementGetUsagePage(element) == 0x07 else { return }
+            detector.onInputValue?(IOHIDElementGetUsage(element), Int64(IOHIDValueGetIntegerValue(value)))
+        }, context)
         _ = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         refresh(notifyEvenIfUnchanged: true)
         // Some macOS privacy configurations deny IOHIDManagerOpen even when

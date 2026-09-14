@@ -1,74 +1,78 @@
-import AppKit
-import Carbon.HIToolbox
+import Foundation
+import OSLog
 
 final class KeyboardRouter {
-    private var tap: CFMachPort?
-    private var source: CFRunLoopSource?
+    private var started = false
+    private var modifiers: UInt8 = 0
+    private var pressedKeys = Set<UInt32>()
+    private let logger = Logger(subsystem: "com.swaymun.ducky-access", category: "keyboard")
+
     var onAction: ((PadAction) -> Void)?
 
-    private let keyCodes: [Int: Int] = [
-        122: 1, 120: 2, 99: 3, 118: 4, 96: 5, 97: 6, 98: 7, 100: 8,
-        101: 9, 109: 10, 103: 11, 111: 12, 105: 13, 107: 14, 113: 15,
-        106: 16, 64: 17, 79: 18, 80: 19, 90: 20, 87: 21, 88: 22, 110: 23,
-        117: 24
-    ]
+    // USB HID usages for F1-F12 are 0x3A-0x45; F13-F24 are 0x68-0x73.
+    private let functionByUsage: [UInt8: Int] = {
+        var result: [UInt8: Int] = [:]
+        for index in 0..<12 { result[0x3A + UInt8(index)] = index + 1 }
+        for index in 0..<12 { result[0x68 + UInt8(index)] = index + 13 }
+        return result
+    }()
 
-    func start() {
-        guard tap == nil else { return }
-        let mask = (CGEventMask(1) << CGEventType.keyDown.rawValue) | (CGEventMask(1) << CGEventType.keyUp.rawValue)
-        let context = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-        tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: { _, type, event, context in
-                guard let context else { return Unmanaged.passUnretained(event) }
-                let router = Unmanaged<KeyboardRouter>.fromOpaque(context).takeUnretainedValue()
-                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                    if let tap = router.tap { CGEvent.tapEnable(tap: tap, enable: true) }
-                    return Unmanaged.passUnretained(event)
-                }
-                guard type == .keyDown || type == .keyUp else { return Unmanaged.passUnretained(event) }
-                let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
-                guard let function = router.keyCodes[code] else { return Unmanaged.passUnretained(event) }
-                let flags = event.flags.intersection(.maskShift.union(.maskControl).union(.maskCommand).union(.maskAlternate))
-                let all = flags == [.maskShift, .maskControl, .maskCommand, .maskAlternate]
-                let encoder = flags == [.maskShift, .maskControl, .maskAlternate]
-                guard all || encoder else { return Unmanaged.passUnretained(event) }
-                if type == .keyDown {
-                    if all {
-                        let letters = Array("ABCDEFGHIJKLMNO")
-                        if function <= 15 { router.emit(.hint(letters[function - 1])) }
-                        else if function == 16 { router.emit(.navigate) }
-                        else if function == 17 { router.emit(.dictate) }
-                        else if function == 18 { router.emit(.command) }
-                        else if function == 19 { router.emit(.backspace) }
-                        else if function == 20 { router.emit(.escape) }
-                    } else {
-                        switch function {
-                        case 21: router.emit(.volumeUp)
-                        case 22: router.emit(.volumeDown)
-                        case 23: router.emit(.mute)
-                        case 13: router.emit(.scrollUp)
-                        case 14: router.emit(.scrollDown)
-                        case 15: router.emit(.appSwitcher)
-                        default: break
-                        }
-                    }
-                }
-                return nil
-            }, userInfo: context
-        )
-        guard let tap else { return }
-        source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        if let source { CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes) }
-        CGEvent.tapEnable(tap: tap, enable: true)
+    func start(using detector: DuckyPadDetector) {
+        guard !started else { return }
+        started = true
+        detector.onInputValue = { [weak self] usage, value in
+            self?.receive(usage: usage, value: value)
+        }
     }
 
     func stop() {
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
-        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
-        source = nil
-        tap = nil
+        modifiers = 0
+        pressedKeys.removeAll()
+        started = false
+    }
+
+    private func receive(usage: UInt32, value: Int64) {
+        switch usage {
+        case 0xE0...0xE7:
+            let bit = UInt8(1 << (usage - 0xE0))
+            if value != 0 { modifiers |= bit } else { modifiers &= ~bit }
+        default:
+            guard usage <= UInt32(UInt8.max) else { return }
+            if value == 0 {
+                pressedKeys.remove(usage)
+            } else if pressedKeys.insert(usage).inserted {
+                route(usage: UInt8(usage), modifiers: modifiers)
+            }
+        }
+    }
+
+    private func route(usage: UInt8, modifiers: UInt8) {
+        guard let function = functionByUsage[usage] else { return }
+        let allModifiers = modifiers == 0x0F // Ctrl + Shift + Alt + GUI
+        let encoderModifiers = modifiers == 0x07 // Ctrl + Shift + Alt
+        guard allModifiers || encoderModifiers else { return }
+
+        logger.info("Received DuckyPad HID usage=\(usage) function=\(function) modifiers=\(modifiers)")
+
+        if allModifiers {
+            let letters = Array("ABCDEFGHIJKLMNO")
+            if function <= 15 { emit(.hint(letters[function - 1])) }
+            else if function == 16 { emit(.navigate) }
+            else if function == 17 { emit(.dictate) }
+            else if function == 18 { emit(.command) }
+            else if function == 19 { emit(.backspace) }
+            else if function == 20 { emit(.escape) }
+        } else {
+            switch function {
+            case 21: emit(.volumeUp)
+            case 22: emit(.volumeDown)
+            case 23: emit(.mute)
+            case 13: emit(.scrollUp)
+            case 14: emit(.scrollDown)
+            case 15: emit(.appSwitcher)
+            default: break
+            }
+        }
     }
 
     private func emit(_ action: PadAction) {
