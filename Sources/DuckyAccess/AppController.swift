@@ -264,13 +264,25 @@ final class DuckyAccessController: NSObject {
     }
 
     private func dictationMenu(_ record: DictationRecord) -> NSMenuItem {
-        let title = "\(record.mode == .dictate ? "Dictation" : "Command") · \(record.createdAt.formatted(date: .omitted, time: .shortened))"
+        let title = "\(menuPreview(for: record)) · \(record.createdAt.formatted(date: .omitted, time: .shortened))"
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.toolTip = record.formattedText ?? record.rawText
         let child = NSMenu(); let id = record.id.uuidString
         for (title, tag) in [("Copy formatted", 1), ("Copy raw", 2), ("Play recording", 3), ("View all history", 4), ("Delete", 5)] {
             let action = NSMenuItem(title: title, action: #selector(dictationAction(_:)), keyEquivalent: ""); action.target = self; action.tag = tag; action.representedObject = id; child.addItem(action)
         }
         item.submenu = child; return item
+    }
+
+    private func menuPreview(for record: DictationRecord) -> String {
+        let source = [record.formattedText, record.rawText]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? "No text"
+        let singleLine = source
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        let limit = 42
+        return singleLine.count > limit ? String(singleLine.prefix(limit)) + "…" : singleLine
     }
 
     private func modelDisplay(_ value: String) -> String { value.replacingOccurrences(of: "gpt-5.6-", with: "").replacingOccurrences(of: "gpt-", with: "").capitalized }
