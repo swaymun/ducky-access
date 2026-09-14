@@ -98,7 +98,17 @@ final class DuckyPadDetector {
         IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone))
         reportBuffers.removeValue(forKey: key)?.deallocate()
         devices.removeValue(forKey: key)
+        if devices.isEmpty {
+            reportModifiers = 0
+            reportPressedKeys.removeAll()
+        }
         logger.info("Detached DuckyPad keyboard interface")
+    }
+
+    private func emitUsage(_ usage: UInt32, value: Int64) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onInputValue?(usage, value)
+        }
     }
 
     private func receiveReport(_ report: UnsafeMutablePointer<UInt8>, length: CFIndex, reportID: UInt32) {
@@ -112,7 +122,7 @@ final class DuckyPadDetector {
         for bit in 0..<8 {
             let mask = UInt8(1 << bit)
             if (nextModifiers & mask) != (reportModifiers & mask) {
-                onInputValue?(0xE0 + UInt32(bit), (nextModifiers & mask) == 0 ? 0 : 1)
+                emitUsage(0xE0 + UInt32(bit), value: (nextModifiers & mask) == 0 ? 0 : 1)
             }
         }
         reportModifiers = nextModifiers
@@ -126,8 +136,8 @@ final class DuckyPadDetector {
                 if usage != 0 { nextKeys.insert(usage) }
             }
         }
-        for usage in nextKeys.subtracting(reportPressedKeys) { onInputValue?(UInt32(usage), 1) }
-        for usage in reportPressedKeys.subtracting(nextKeys) { onInputValue?(UInt32(usage), 0) }
+        for usage in nextKeys.subtracting(reportPressedKeys) { emitUsage(UInt32(usage), value: 1) }
+        for usage in reportPressedKeys.subtracting(nextKeys) { emitUsage(UInt32(usage), value: 0) }
         reportPressedKeys = nextKeys
     }
 }
