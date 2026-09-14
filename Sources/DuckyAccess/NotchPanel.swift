@@ -9,6 +9,13 @@ final class NotchPanelController {
     private var timer: Timer?
     private var dismissWork: DispatchWorkItem?
     private var dismissed = false
+    var onDismiss: (() -> Void)?
+    var commandCancellable = false {
+        didSet {
+            panel.contentView?.setAccessibilityLabel(commandCancellable ? "Stop command" : "Dismiss dictation preview")
+            panel.contentView?.toolTip = commandCancellable ? "Click to stop this command. Completed actions are not undone." : "Click to dismiss"
+        }
+    }
     private let logger = Logger(subsystem: "com.swaymun.ducky-access", category: "notch")
 
     init() {
@@ -24,6 +31,7 @@ final class NotchPanelController {
             self?.dismissed = true
             self?.hide()
             self?.logger.info("Notch dismissed by click")
+            self?.onDismiss?()
         }
         visual.setAccessibilityElement(true)
         visual.setAccessibilityRole(.button)

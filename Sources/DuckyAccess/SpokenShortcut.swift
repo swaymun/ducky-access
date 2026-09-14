@@ -22,7 +22,7 @@ enum SpokenShortcut {
     }
 
     // Parse only a literal chord, never an inferred action or a sequence.
-    // This stays local; ordinary speech still goes to the bounded classifier.
+    // This stays local; other commands go to the bounded agent session.
     static func parse(_ transcript: String) -> ParseResult {
         var text = transcript.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         for (phrase, replacement) in [
@@ -91,14 +91,14 @@ enum KeyboardOutput {
     static let eventTag: Int64 = 0x4455434B595357
 
     @discardableResult
-    static func send(_ shortcut: KeyboardShortcut) -> Bool {
+    static func send(_ shortcut: KeyboardShortcut, to pid: pid_t? = nil) -> Bool {
         guard CGPreflightPostEventAccess(), let source = CGEventSource(stateID: .privateState),
               let down = CGEvent(keyboardEventSource: source, virtualKey: shortcut.keyCode, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: shortcut.keyCode, keyDown: false) else { return false }
         for event in [down, up] {
             event.flags = shortcut.flags
             event.setIntegerValueField(.eventSourceUserData, value: eventTag)
-            event.post(tap: .cghidEventTap)
+            if let pid { event.postToPid(pid) } else { event.post(tap: .cghidEventTap) }
         }
         return true
     }

@@ -17,7 +17,8 @@ The black dictation preview extends below the built-in notch at its measured
 width (or 200 points on a display without a notch). It stays visible while
 listening and formatting, then dismisses 2.5 seconds after insertion, copying,
 or command completion. Click to dismiss it sooner; this does not cancel
-recording or insertion.
+recording or insertion in DICT mode. During a CMD recording or command run,
+clicking the notch cancels that command instead.
 
 ## Build
 
@@ -37,7 +38,20 @@ For a quick local verification after the first build:
 ./scripts/verify-profile.sh
 swift run -c release ParakeetProbe /path/to/english-recording.wav
 ./scripts/verify-app-server.sh
+swift test
 ```
+
+An opt-in command smoke test uses the signed-in Codex account and model quota,
+but only a synthetic app (no desktop control or personal screen content):
+
+```sh
+DUCKY_TEST_APP_SERVER=1 swift test --filter CommandSessionTests/testLiveAppServerDynamicToolRoundTrip
+```
+
+This verifies model/tool round trips, not physical pad or real-app behavior.
+Live acceptance additionally requires CMD → “In Calculator, calculate twelve
+times seven” → CMD, checking 84, then cancelling a second run by clicking the
+notch and checking that no subsequent action is sent.
 
 If the menu says the pad is connected but a press does nothing, confirm that
 `DuckyAccess` is enabled under System Settings → Privacy & Security → Input
@@ -88,9 +102,41 @@ Use **CMD**, say one shortcut, then press **CMD** again:
 Literal shortcuts run locally without waiting for Luna. Command/cmd,
 Control/ctrl, Option/alt, and Shift are supported, along with letters, digits,
 F1–F12, arrows, and common named keys. They use macOS English/ANSI key positions.
-Say one complete chord at a time: “Control Command Option” alone needs a key.
+“Control Command Option” alone still needs a key.
 Shortcuts act on the focused app just like the keyboard, including shortcuts
 that submit or delete. **DICT** remains text-only; it never executes shortcuts.
+
+### Multi-step commands (experimental)
+
+Other CMD requests use Luna through ChatGPT's bundled Codex App Server.
+Ducky Access executes a small set of native Accessibility and keyboard/mouse
+actions under its own macOS permissions, with no Computer Use helper or Wonder
+installation required. The model receives only fixed tools, not arbitrary code.
+The loop is inspect, act, then inspect again. “Run command…” in the
+menu or Help uses this same path without recording audio.
+
+The controller reads the requested app's focused window, uses fresh element
+indices for each action, and refuses input after focus/window changes. Optional
+window-only screenshots require **Ducky Access's own Screen Recording permission**;
+ChatGPT's permission does not carry over. Without it, accessibility-based actions
+still work. Coordinate clicks require a fresh screenshot. Protected fields are
+not readable/typable; screenshots are withheld when protected fields are found.
+
+The notch shows the current step. **Click the notch, press ESC, or press CMD
+again to stop**. Cancellation blocks further tool calls immediately, interrupts
+the agent, and closes this command's App Server process. An action already dispatched may
+finish; completed actions cannot be undone. Runs are limited to 40 tool calls
+and three minutes. Sensitive steps request native confirmation; Cancel is the
+default. In this experimental version, actions outside Calculator and TextEdit
+also require confirmation on each step, and TextEdit text insertion requires
+confirmation. These native checks cannot be disabled by the model. This is an
+intentional safety limit while real-app coverage is expanded. A tool timeout stops the run instead of blindly retrying an action
+that might already have completed.
+
+The Codex executable is reused from `/Applications/ChatGPT.app`, not
+bundled or redistributed with this MIT project. Native controls use Apple's APIs.
+The bridge isolates commands from unrelated configured MCP servers and plugins;
+it does not grant a general-purpose shell to the voice agent.
 
 The profile emits reserved modifier/function-key chords. The bridge uses its
 keyboard event tap when permitted and the matched DuckyPad HID interface as a
@@ -104,7 +150,14 @@ The [demo video](demo/ducky-access-demo.mp4) is a clean, synthetic product walkt
 
 ## Privacy and safety
 
-Audio, raw transcripts, cleaned transcripts, and recordings remain local until deleted. Parakeet runs locally. Luna receives only the finished text required for formatting or command classification. Literal spoken shortcuts are parsed locally. Luna command classification is limited to focus app, open URL, switch tab, and scroll; it cannot invent or execute arbitrary shortcuts, shell commands, or computer-use actions.
+Audio and dictation history are stored locally until deleted. Parakeet and
+literal shortcut parsing run locally. DICT sends its finished transcript to
+Luna for formatting. Multi-step CMD runs additionally send the relevant app's
+accessibility text and requested window screenshots to the selected
+Codex model. On-screen content can contain private information; only use CMD
+with apps you intend the agent to inspect. Command sessions are ephemeral;
+the local history keeps the spoken request and outcome, not the tool screenshots.
+No shell or unrelated connectors are enabled for these command sessions.
 
 ## License
 

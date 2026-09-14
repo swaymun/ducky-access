@@ -18,6 +18,11 @@ final class DuckyAccessController: NSObject {
     private var statusItem: NSStatusItem!
     private var menu = NSMenu()
     private var recordingMode: RecordingMode?
+    private var commandID: UUID?
+    private var commandSession: CommandSession?
+    private var commandApproval: NSAlert?
+    private var speechStarting = false
+    private var speechFinalizing = false
     private var model = "gpt-5.6-luna"
     private var effort = "low"
     private var serviceTier = "priority"
@@ -35,11 +40,16 @@ final class DuckyAccessController: NSObject {
         statusItem.button?.title = "◉ Ducky"
         statusItem.menu = menu
         detector.onChange = { [weak self] connected in
-            if !connected { self?.appSwitcher.cancel() }
+            if !connected { self?.cancelCommand(); self?.appSwitcher.cancel() }
             self?.status = connected ? .ready : .disconnected
             self?.rebuildMenu()
         }
         keyboard.onAction = { [weak self] action in self?.handle(action) }
+        help.onCommand = { [weak self] in self?.runTypedCommand(nil) }
+        notch.onDismiss = { [weak self] in
+            guard self?.commandID != nil else { return }
+            self?.cancelCommand()
+        }
         keyboard.filterUnmatchedEvent = { [weak self] type, event in
             guard let self else { return event }
             return self.appSwitcher.filterEvent(type, event)
@@ -118,18 +128,31 @@ final class DuckyAccessController: NSObject {
     }
 
     private func toggleRecording(_ mode: RecordingMode) {
+        if commandID != nil && recordingMode == nil { cancelCommand(); return }
+        guard !speechStarting, !speechFinalizing else { NSSound.beep(); return }
         if recordingMode != nil { stopRecording(); return }
         guard status != .formatting else { NSSound.beep(); return }
         guard speech.modelReady else { NSSound.beep(); lastError = "Parakeet is still loading"; rebuildMenu(); return }
         lastError = nil
         recordingMode = mode
+        let id = mode == .command ? UUID() : nil
+        commandID = id
+        notch.commandCancellable = mode == .command
         status = .recording
         notch.show(mode: mode)
+        speechStarting = true
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                try await speech.start { [weak self] partial in self?.notch.update(text: partial) }
+                try await speech.start { [weak self] partial in
+                    guard let self, mode != .command || self.commandID == id else { return }
+                    self.notch.update(text: partial)
+                }
+                self.speechStarting = false
+                if mode == .command && self.commandID != id { self.speech.cancel() }
             } catch {
+                self.speechStarting = false
+                self.commandID = nil; self.notch.commandCancellable = false
                 self.recordingMode = nil; self.status = .error; self.lastError = error.localizedDescription; self.notch.hide(); self.rebuildMenu()
             }
         }
@@ -138,19 +161,28 @@ final class DuckyAccessController: NSObject {
 
     private func stopRecording() {
         guard let mode = recordingMode else { return }
+        let id = commandID
         recordingMode = nil
+        speechFinalizing = true
         status = .formatting
         notch.showResult("Finalizing…", status: mode == .dictate ? "Dictation" : "Command")
         speech.stop { [weak self] result in
             guard let self else { return }
             DispatchQueue.main.async {
+                self.speechFinalizing = false
+                if mode == .command && self.commandID != id {
+                    if case .success(let value) = result, let url = value.audioURL { try? FileManager.default.removeItem(at: url) }
+                    return // Cancelled while Parakeet was finalizing: never launch an agent.
+                }
                 switch result {
                 case .failure(let error):
+                    self.commandID = nil; self.notch.commandCancellable = false
                     self.status = .error; self.lastError = error.localizedDescription; self.notch.showResult(error.localizedDescription, status: "Error"); self.rebuildMenu()
                 case .success(let value):
                     let audioData = value.audioURL.flatMap { try? Data(contentsOf: $0) }
                     if let url = value.audioURL { try? FileManager.default.removeItem(at: url) }
                     guard !value.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        self.commandID = nil; self.notch.commandCancellable = false
                         self.status = .ready
                         self.notch.showResult("", status: "No speech detected")
                         self.rebuildMenu()
@@ -186,17 +218,10 @@ final class DuckyAccessController: NSObject {
                             let resultText = sent ? "Sent \(shortcut.displayName)" : "Enable Accessibility to send shortcuts."
                             self.finishCommand(raw: value.text, resultText: resultText, audioData: audioData, duration: value.duration, error: sent ? nil : resultText)
                             return
-                        case .invalid(let message):
-                            self.finishCommand(raw: value.text, resultText: message, audioData: audioData, duration: value.duration, error: message)
-                            return
-                        case .notShortcut: break
+                        case .invalid, .notShortcut: break
                         }
-                        self.appServer.routeCommand(value.text, model: self.model, effort: self.effort, serviceTier: self.serviceTier) { routed in
-                            DispatchQueue.main.async {
-                                let resultText = self.execute(routed)
-                                self.finishCommand(raw: value.text, resultText: resultText, audioData: audioData, duration: value.duration)
-                            }
-                        }
+                        guard let id else { return }
+                        self.runMultiStepCommand(value.text, id: id, audioData: audioData, duration: value.duration)
                     }
                 }
             }
@@ -205,6 +230,8 @@ final class DuckyAccessController: NSObject {
     }
 
     private func finishCommand(raw: String, resultText: String, audioData: Data?, duration: TimeInterval, error: String? = nil) {
+        commandID = nil
+        notch.commandCancellable = false
         history.add(raw: raw, formatted: resultText, mode: .command, audioData: audioData, duration: duration, error: error)
         notch.showResult(resultText, status: error == nil ? "Command" : "Try again", dismissAfter: 2.5)
         lastError = error
@@ -212,8 +239,59 @@ final class DuckyAccessController: NSObject {
         rebuildMenu()
     }
 
+    private func runMultiStepCommand(_ text: String, id: UUID, audioData: Data?, duration: TimeInterval) {
+        appSwitcher.cancel(); navigator.close()
+        let session = CommandSession()
+        commandSession = session
+        session.onProgress = { [weak self] message in
+            guard let self, self.commandID == id else { return }
+            self.notch.showResult(message, status: "Command · click to stop")
+        }
+        session.onApproval = { [weak self] message, completion in
+            guard let self, self.commandID == id else { completion(false); return }
+            let alert = NSAlert()
+            alert.messageText = "Allow this command step?"
+            alert.informativeText = message
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Allow once")
+            self.commandApproval = alert
+            let target = NSWorkspace.shared.frontmostApplication
+            let response = alert.runModal()
+            self.commandApproval = nil
+            let approved = self.commandID == id && response == .alertSecondButtonReturn
+            if approved { target?.activate(options: [.activateAllWindows]) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { completion(self.commandID == id && approved) }
+        }
+        session.onFinish = { [weak self] outcome in
+            guard let self else { return }
+            self.history.add(raw: text, formatted: outcome.text, mode: .command, audioData: audioData, duration: duration, error: outcome.error)
+            guard self.commandID == id else { return }
+            if let alert = self.commandApproval {
+                NSApp.abortModal(); alert.window.orderOut(nil); self.commandApproval = nil
+            }
+            self.commandSession = nil; self.commandID = nil
+            self.notch.commandCancellable = false
+            if outcome.cancelled { self.notch.hide() }
+            else { self.notch.showResult(outcome.text, status: outcome.error == nil ? "Command" : "Needs attention", dismissAfter: 2.5) }
+            self.lastError = outcome.error; self.status = outcome.error == nil ? .ready : .error
+            self.rebuildMenu()
+        }
+        session.start(text, model: model, effort: effort, serviceTier: serviceTier)
+    }
+
+    func cancelCommand() {
+        guard commandID != nil else { return }
+        commandID = nil // Invalidate all late speech, model, and tool callbacks.
+        if recordingMode == .command { recordingMode = nil; speech.cancel() }
+        commandSession?.cancel(); commandSession = nil
+        if let alert = commandApproval { NSApp.abortModal(); alert.window.orderOut(nil); commandApproval = nil }
+        notch.commandCancellable = false; notch.hide()
+        status = .ready; lastError = nil; rebuildMenu()
+    }
+
     private func cancelCurrent() {
-        if recordingMode != nil { recordingMode = nil; speech.cancel(); notch.hide(); status = .ready }
+        if commandID != nil { cancelCommand() }
+        else if recordingMode != nil { recordingMode = nil; speech.cancel(); notch.hide(); status = .ready }
         else if appSwitcher.active { appSwitcher.cancel() }
         else if navigator.active { navigator.close() }
         else { postEscape() }
@@ -222,25 +300,6 @@ final class DuckyAccessController: NSObject {
 
     private func logPermissions() {
         logger.info("Permissions accessibility=\(self.permissions.accessibility) keyboardOutput=\(self.permissions.keyboardOutput) inputMonitoring=\(self.permissions.inputMonitoring)")
-    }
-
-    private func execute(_ result: Result<AppServerClient.JSON, Error>) -> String {
-        guard case .success(let object) = result else { return "Command could not be classified." }
-        switch object["action"] as? String {
-        case "focus_app":
-            let target = object["target"] as? String ?? ""
-            if let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName?.localizedCaseInsensitiveContains(target) == true }) { app.activate(options: [.activateAllWindows]); return "Focused \(app.localizedName ?? target)." }
-            return "Could not find \(target)."
-        case "open_url":
-            guard let raw = object["url"] as? String, let url = URL(string: raw), ["http", "https"].contains(url.scheme?.lowercased()) else { return "The URL was not allowed." }
-            NSWorkspace.shared.open(url); return "Opened \(url.absoluteString)."
-        case "switch_tab":
-            let backward = (object["direction"] as? String)?.lowercased() == "previous"
-            guard KeyboardOutput.send(KeyboardShortcut(keyCode: 48, flags: backward ? [.maskControl, .maskShift] : .maskControl, keyName: "Tab")) else { return "Enable Accessibility to switch tabs." }
-            return backward ? "Previous tab." : "Next tab."
-        case "scroll": navigator.scroll((object["direction"] as? String)?.lowercased() == "down" ? -3 : 3); return "Scrolled."
-        default: return "I need a clearer allowed command."
-        }
     }
 
     private func postMediaKey(_ key: CGKeyCode) {
@@ -253,9 +312,28 @@ final class DuckyAccessController: NSObject {
     }
 
     @objc func showHelp(_ sender: Any?) { help.show() }
+    @objc func runTypedCommand(_ sender: Any?) {
+        guard commandID == nil, recordingMode == nil, !speechStarting, !speechFinalizing, status != .formatting else { NSSound.beep(); return }
+        let alert = NSAlert()
+        alert.messageText = "Run a computer command"
+        alert.informativeText = "Describe the steps to perform. Click the notch or press ESC to stop. Actions already sent may finish."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 26))
+        field.placeholderString = "In Calculator, calculate twelve times seven"
+        field.setAccessibilityLabel("Computer command")
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Run")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let id = UUID(); commandID = id; status = .formatting
+        notch.commandCancellable = true; notch.show(mode: .command)
+        runMultiStepCommand(text, id: id, audioData: nil, duration: 0)
+        rebuildMenu()
+    }
     @objc func repairPermissions(_ sender: Any?) { ControlPermissions.openSettings() }
     @objc func showHistory(_ sender: Any?) { if let url = try? history.writeHTML() { NSWorkspace.shared.open(url) } }
-    @objc func quit(_ sender: Any?) { appSwitcher.cancel(); navigator.close(); keyboard.stop(); appServer.stop(); NSApp.terminate(nil) }
+    @objc func quit(_ sender: Any?) { cancelCommand(); appSwitcher.cancel(); navigator.close(); keyboard.stop(); appServer.stop(); NSApp.terminate(nil) }
     @objc func selectModel(_ sender: NSMenuItem) { if let value = sender.representedObject as? String { model = value; rebuildMenu() } }
     @objc func selectEffort(_ sender: NSMenuItem) { if let value = sender.representedObject as? String { effort = value; rebuildMenu() } }
     @objc func selectSpeed(_ sender: NSMenuItem) { if let value = sender.representedObject as? String { serviceTier = value == "Fast" ? "priority" : "default"; rebuildMenu() } }
@@ -301,6 +379,10 @@ final class DuckyAccessController: NSObject {
         let usageItem = NSMenuItem(title: usageTitle(), action: nil, keyEquivalent: ""); usageItem.isEnabled = false; menu.addItem(usageItem)
         if let lastError { let errorItem = NSMenuItem(title: "⚠ \(lastError)", action: nil, keyEquivalent: ""); errorItem.isEnabled = false; menu.addItem(errorItem) }
         menu.addItem(.separator())
+        let commandItem = NSMenuItem(title: "Run command…", action: #selector(runTypedCommand(_:)), keyEquivalent: "")
+        commandItem.target = self
+        commandItem.isEnabled = commandID == nil && recordingMode == nil && status != .formatting
+        menu.addItem(commandItem)
         let recent = history.recent
         if recent.isEmpty { let empty = NSMenuItem(title: "No dictations yet", action: nil, keyEquivalent: ""); empty.isEnabled = false; menu.addItem(empty) }
         for record in recent { menu.addItem(dictationMenu(record)) }
