@@ -68,7 +68,29 @@ Import the packaged profile with the official duckyPad Configurator, then save i
 |---|---|---|---|---|
 | F | G | H | I | J |
 | K | L | M | N | O |
-| NAV | DICT | CMD | BKSP | ESC |
+| NAV | DICT | CMD | ENTER | ESC |
+
+**ENTER** sends a normal Return to the focused app (which may submit a message).
+It replaces BKSP in the same physical position. Press the app knob to open the
+native macOS app switcher, turn to select, and press again or ENTER to activate.
+ESC cancels. An unattended switcher cancels after 30 seconds; it also cancels
+on disconnect or app exit. When closed, that knob scrolls as before.
+
+### Spoken shortcuts
+
+Use **CMD**, say one shortcut, then press **CMD** again:
+
+- “Command T” → ⌘T
+- “Control Option Command T” → ⌃⌥⌘T
+- “Command Shift Tab” → ⇧⌘Tab
+- “Press Enter” → Return
+
+Literal shortcuts run locally without waiting for Luna. Command/cmd,
+Control/ctrl, Option/alt, and Shift are supported, along with letters, digits,
+F1–F12, arrows, and common named keys. They use macOS English/ANSI key positions.
+Say one complete chord at a time: “Control Command Option” alone needs a key.
+Shortcuts act on the focused app just like the keyboard, including shortcuts
+that submit or delete. **DICT** remains text-only; it never executes shortcuts.
 
 The profile emits reserved modifier/function-key chords. The bridge uses its
 keyboard event tap when permitted and the matched DuckyPad HID interface as a
@@ -82,7 +104,7 @@ The [demo video](demo/ducky-access-demo.mp4) is a clean, synthetic product walkt
 
 ## Privacy and safety
 
-Audio, raw transcripts, cleaned transcripts, and recordings remain local until deleted. Parakeet runs locally. Luna receives only the finished text required for formatting or command classification. Command classification is limited to focus app, open URL, switch tab, and scroll; it is not a shell or general computer-use agent.
+Audio, raw transcripts, cleaned transcripts, and recordings remain local until deleted. Parakeet runs locally. Luna receives only the finished text required for formatting or command classification. Literal spoken shortcuts are parsed locally. Luna command classification is limited to focus app, open URL, switch tab, and scroll; it cannot invent or execute arbitrary shortcuts, shell commands, or computer-use actions.
 
 ## License
 

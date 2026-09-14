@@ -10,6 +10,9 @@ final class KeyboardRouter {
     private var tapRetryAttempts = 0
     private var modifiers: UInt8 = 0
     private var pressedKeys = Set<UInt32>()
+    private var capturedKeys = Set<CGKeyCode>()
+    private var pendingActions: [PadAction] = []
+    private var pendingExpiry: DispatchWorkItem?
     private let logger = Logger(subsystem: "com.swaymun.ducky-access", category: "keyboard")
     private let functionByKeyCode: [CGKeyCode: Int] = [
         122: 1, 120: 2, 99: 3, 118: 4, 96: 5, 97: 6, 98: 7, 100: 8,
@@ -19,6 +22,7 @@ final class KeyboardRouter {
     ]
 
     var onAction: ((PadAction) -> Void)?
+    var filterUnmatchedEvent: ((CGEventType, CGEvent) -> CGEvent?)?
 
     func refreshPermissions() {
         guard started, tap == nil, CGPreflightPostEventAccess() else { return }
@@ -53,6 +57,9 @@ final class KeyboardRouter {
         tap = nil
         modifiers = 0
         pressedKeys.removeAll()
+        capturedKeys.removeAll()
+        pendingActions.removeAll()
+        pendingExpiry?.cancel()
         started = false
     }
 
@@ -65,6 +72,7 @@ final class KeyboardRouter {
         case 0xE0...0xE7:
             let bit = UInt8(1 << (usage - 0xE0))
             if value != 0 { modifiers |= bit } else { modifiers &= ~bit }
+            if modifiers == 0 { flushActions() }
         default:
             guard usage <= UInt32(UInt8.max) else { return }
             if value == 0 {
@@ -89,7 +97,7 @@ final class KeyboardRouter {
             else if function == 16 { emit(.navigate) }
             else if function == 17 { emit(.dictate) }
             else if function == 18 { emit(.command) }
-            else if function == 19 { emit(.backspace) }
+            else if function == 19 { emit(.enter) }
             else if function == 20 { emit(.escape) }
         } else {
             switch function {
@@ -106,12 +114,56 @@ final class KeyboardRouter {
     }
 
     private func emit(_ action: PadAction) {
-        DispatchQueue.main.async { [weak self] in self?.onAction?(action) }
+        // DuckyScript releases its modifiers AFTER the function key. Wait for
+        // those releases, otherwise Return inherits the chord and Command-Tab
+        // can disappear as soon as the script finishes.
+        pendingActions.append(action)
+        pendingExpiry?.cancel()
+        let expiry = DispatchWorkItem { [weak self] in self?.pendingActions.removeAll() }
+        pendingExpiry = expiry
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: expiry)
+    }
+
+    private func flushActions() {
+        guard !pendingActions.isEmpty else { return }
+        pendingExpiry?.cancel()
+        pendingExpiry = nil
+        let actions = pendingActions
+        pendingActions.removeAll()
+        DispatchQueue.main.async { [weak self] in
+            for action in actions { self?.onAction?(action) }
+        }
+    }
+
+    func processEvent(_ type: CGEventType, _ event: CGEvent) -> CGEvent? {
+        if event.getIntegerValueField(.eventSourceUserData) == KeyboardOutput.eventTag { return event }
+        let flags = event.flags.intersection([.maskShift, .maskControl, .maskCommand, .maskAlternate])
+        if type == .flagsChanged && flags.isEmpty { flushActions() }
+        if type == .keyDown || type == .keyUp {
+            let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+            if type == .keyUp && capturedKeys.remove(code) != nil { return nil }
+            if let function = functionByKeyCode[code] {
+                let allModifiers: UInt8 = flags == [.maskShift, .maskControl, .maskCommand, .maskAlternate] ? 0x0F : 0
+                let encoderModifiers: UInt8 = flags == [.maskShift, .maskControl, .maskAlternate] ? 0x07 : 0
+                if allModifiers != 0 || encoderModifiers != 0 {
+                    if type == .keyDown {
+                        capturedKeys.insert(code)
+                        if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                            _ = route(function: function, modifiers: allModifiers != 0 ? allModifiers : encoderModifiers)
+                        }
+                    }
+                    return nil
+                }
+            }
+        }
+        if let filterUnmatchedEvent { return filterUnmatchedEvent(type, event) }
+        return event
     }
 
     private func startEventTap() {
         guard tap == nil else { return }
-        let mask = (CGEventMask(1) << CGEventType.keyDown.rawValue) | (CGEventMask(1) << CGEventType.keyUp.rawValue)
+        let mask = [CGEventType.keyDown, .keyUp, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+            .reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
         let context = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
         tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -125,17 +177,7 @@ final class KeyboardRouter {
                     if let tap = router.tap { CGEvent.tapEnable(tap: tap, enable: true) }
                     return Unmanaged.passUnretained(event)
                 }
-                guard type == .keyDown || type == .keyUp else { return Unmanaged.passUnretained(event) }
-                let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-                guard let function = router.functionByKeyCode[code] else { return Unmanaged.passUnretained(event) }
-                let flags = event.flags.intersection([.maskShift, .maskControl, .maskCommand, .maskAlternate])
-                let allModifiers: UInt8 = flags == [.maskShift, .maskControl, .maskCommand, .maskAlternate] ? 0x0F : 0
-                let encoderModifiers: UInt8 = flags == [.maskShift, .maskControl, .maskAlternate] ? 0x07 : 0
-                guard allModifiers != 0 || encoderModifiers != 0 else { return Unmanaged.passUnretained(event) }
-                if type == .keyDown && event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
-                    _ = router.route(function: function, modifiers: allModifiers != 0 ? allModifiers : encoderModifiers)
-                }
-                return nil
+                return router.processEvent(type, event).map { Unmanaged.passUnretained($0) }
             },
             userInfo: context
         )

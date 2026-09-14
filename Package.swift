@@ -26,6 +26,7 @@ let package = Package(
                 .linkedFramework("ServiceManagement")
             ]
         ),
+        .testTarget(name: "DuckyAccessTests", dependencies: ["DuckyAccess"]),
         .executableTarget(
             name: "ParakeetProbe",
             dependencies: [

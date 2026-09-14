@@ -41,7 +41,7 @@ enum PadAction {
     case navigate
     case dictate
     case command
-    case backspace
+    case enter
     case escape
     case volumeUp
     case volumeDown

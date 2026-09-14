@@ -11,7 +11,7 @@ z9 CMD
 z10 M
 z11 H
 z12 C
-z13 BKSP
+z13 ENTER
 z14 N
 z15 I
 z16 D

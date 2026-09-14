@@ -35,10 +35,15 @@ final class DuckyAccessController: NSObject {
         statusItem.button?.title = "◉ Ducky"
         statusItem.menu = menu
         detector.onChange = { [weak self] connected in
+            if !connected { self?.appSwitcher.cancel() }
             self?.status = connected ? .ready : .disconnected
             self?.rebuildMenu()
         }
         keyboard.onAction = { [weak self] action in self?.handle(action) }
+        keyboard.filterUnmatchedEvent = { [weak self] type, event in
+            guard let self else { return event }
+            return self.appSwitcher.filterEvent(type, event)
+        }
         navigator.onError = { [weak self] message in self?.lastError = message; self?.rebuildMenu() }
         appServer.onReady = { [weak self] in self?.rebuildMenu() }
         appServer.onModels = { [weak self] models in self?.availableModels = models; self?.rebuildMenu() }
@@ -89,14 +94,24 @@ final class DuckyAccessController: NSObject {
         case .navigate: navigator.toggle()
         case .dictate: toggleRecording(.dictate)
         case .command: toggleRecording(.command)
-        case .backspace: navigator.backspace()
+        case .enter:
+            if appSwitcher.active { appSwitcher.finish() }
+            else {
+                navigator.close()
+                if !KeyboardOutput.send(KeyboardShortcut(keyCode: 36, flags: [], keyName: "Return")) {
+                    lastError = "Enable Accessibility to send Enter."
+                    rebuildMenu()
+                }
+            }
         case .escape: cancelCurrent()
         case .volumeUp: postMediaKey(0x48)
         case .volumeDown: postMediaKey(0x49)
         case .mute: postMediaKey(0x4c)
         case .scrollUp: appSwitcher.active ? appSwitcher.next() : navigator.scroll(3)
         case .scrollDown: appSwitcher.active ? appSwitcher.previous() : navigator.scroll(-3)
-        case .appSwitcher: appSwitcher.active ? appSwitcher.finish() : appSwitcher.begin()
+        case .appSwitcher:
+            navigator.close()
+            appSwitcher.active ? appSwitcher.finish() : appSwitcher.begin()
         case .appNext: appSwitcher.next()
         case .appPrevious: appSwitcher.previous()
         }
@@ -163,19 +178,37 @@ final class DuckyAccessController: NSObject {
                             }
                         }
                     } else {
+                        switch SpokenShortcut.parse(value.text) {
+                        case .shortcut(let shortcut):
+                            self.appSwitcher.cancel()
+                            self.navigator.close()
+                            let sent = KeyboardOutput.send(shortcut)
+                            let resultText = sent ? "Sent \(shortcut.displayName)" : "Enable Accessibility to send shortcuts."
+                            self.finishCommand(raw: value.text, resultText: resultText, audioData: audioData, duration: value.duration, error: sent ? nil : resultText)
+                            return
+                        case .invalid(let message):
+                            self.finishCommand(raw: value.text, resultText: message, audioData: audioData, duration: value.duration, error: message)
+                            return
+                        case .notShortcut: break
+                        }
                         self.appServer.routeCommand(value.text, model: self.model, effort: self.effort, serviceTier: self.serviceTier) { routed in
                             DispatchQueue.main.async {
                                 let resultText = self.execute(routed)
-                                self.history.add(raw: value.text, formatted: resultText, mode: mode, audioData: audioData, duration: value.duration, error: nil)
-                                self.notch.showResult(resultText, status: "Command", dismissAfter: 2.5)
-                                self.status = .ready
-                                self.rebuildMenu()
+                                self.finishCommand(raw: value.text, resultText: resultText, audioData: audioData, duration: value.duration)
                             }
                         }
                     }
                 }
             }
         }
+        rebuildMenu()
+    }
+
+    private func finishCommand(raw: String, resultText: String, audioData: Data?, duration: TimeInterval, error: String? = nil) {
+        history.add(raw: raw, formatted: resultText, mode: .command, audioData: audioData, duration: duration, error: error)
+        notch.showResult(resultText, status: error == nil ? "Command" : "Try again", dismissAfter: 2.5)
+        lastError = error
+        status = error == nil ? .ready : .error
         rebuildMenu()
     }
 
@@ -203,8 +236,7 @@ final class DuckyAccessController: NSObject {
             NSWorkspace.shared.open(url); return "Opened \(url.absoluteString)."
         case "switch_tab":
             let backward = (object["direction"] as? String)?.lowercased() == "previous"
-            let event = CGEvent(keyboardEventSource: nil, virtualKey: 48, keyDown: true); event?.flags = backward ? [.maskCommand, .maskShift] : .maskCommand; event?.post(tap: .cghidEventTap)
-            let up = CGEvent(keyboardEventSource: nil, virtualKey: 48, keyDown: false); up?.flags = backward ? [.maskCommand, .maskShift] : .maskCommand; up?.post(tap: .cghidEventTap)
+            guard KeyboardOutput.send(KeyboardShortcut(keyCode: 48, flags: backward ? [.maskControl, .maskShift] : .maskControl, keyName: "Tab")) else { return "Enable Accessibility to switch tabs." }
             return backward ? "Previous tab." : "Next tab."
         case "scroll": navigator.scroll((object["direction"] as? String)?.lowercased() == "down" ? -3 : 3); return "Scrolled."
         default: return "I need a clearer allowed command."
@@ -217,8 +249,7 @@ final class DuckyAccessController: NSObject {
     }
 
     private func postEscape() {
-        let down = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: true); down?.post(tap: .cghidEventTap)
-        let up = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: false); up?.post(tap: .cghidEventTap)
+        KeyboardOutput.send(KeyboardShortcut(keyCode: 53, flags: [], keyName: "Esc"))
     }
 
     @objc func showHelp(_ sender: Any?) { help.show() }
