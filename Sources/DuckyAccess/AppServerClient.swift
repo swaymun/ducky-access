@@ -3,6 +3,7 @@ import Foundation
 final class AppServerClient {
     typealias JSON = [String: Any]
     typealias Completion = (Result<JSON, Error>) -> Void
+    private static let turnTimeout: TimeInterval = 90
 
     enum ClientError: LocalizedError {
         case unavailable(String)
@@ -165,11 +166,11 @@ final class AppServerClient {
                                 DispatchQueue.main.async { completion(.success(text)) }
                             }
                         }
-                        self.queue.asyncAfter(deadline: .now() + 20) { [weak self] in
+                        self.queue.asyncAfter(deadline: .now() + Self.turnTimeout) { [weak self] in
                             guard let self,
                                   let timedOut = self.pendingTurns.removeValue(forKey: turnID) else { return }
                             DispatchQueue.main.async {
-                                timedOut(.failure(ClientError.unavailable("Codex App Server timed out")))
+                                timedOut(.failure(ClientError.unavailable("Codex App Server timed out after 90 seconds")))
                             }
                         }
                     }
