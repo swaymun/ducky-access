@@ -121,6 +121,7 @@ final class DuckyPadDetector {
         let offset = includesReportID ? 1 : 0
         guard length > offset + 2 else { return }
         let nextModifiers = report[offset]
+        logger.info("DuckyPad report received reportID=\(reportID, privacy: .public) length=\(length, privacy: .public) modifiers=\(nextModifiers, privacy: .public)")
         for bit in 0..<8 {
             let mask = UInt8(1 << bit)
             if (nextModifiers & mask) != (reportModifiers & mask) {
@@ -138,7 +139,11 @@ final class DuckyPadDetector {
                 if usage != 0 { nextKeys.insert(usage) }
             }
         }
-        for usage in nextKeys.subtracting(reportPressedKeys) { emitUsage(UInt32(usage), value: 1) }
+        let newKeys = nextKeys.subtracting(reportPressedKeys)
+        if !newKeys.isEmpty {
+            logger.info("DuckyPad usage down=\(newKeys.sorted().map(String.init).joined(separator: ","), privacy: .public)")
+        }
+        for usage in newKeys { emitUsage(UInt32(usage), value: 1) }
         for usage in reportPressedKeys.subtracting(nextKeys) { emitUsage(UInt32(usage), value: 0) }
         reportPressedKeys = nextKeys
     }
