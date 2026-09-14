@@ -15,7 +15,7 @@ Ducky Access is a small, local-first macOS menu-bar bridge for a wired duckyPad 
 
 ## Build
 
-Requirements: macOS 14+, Xcode command-line tools, a signed-in ChatGPT desktop app, and a wired duckyPad Pro.
+Requirements: macOS 14+, Xcode command-line tools, a signed-in ChatGPT desktop app, and a wired duckyPad Pro. A local Apple Development signing identity is used when available so macOS privacy permissions remain stable across rebuilds.
 
 ```sh
 ./scripts/build-app.sh
@@ -32,6 +32,13 @@ For a quick local verification after the first build:
 swift run -c release ParakeetProbe /path/to/english-recording.wav
 ./scripts/verify-app-server.sh
 ```
+
+If the menu says the pad is connected but a press does nothing, confirm that
+`DuckyAccess` is enabled under System Settings → Privacy & Security → Input
+Monitoring, then relaunch the app. A healthy launch logs
+`matchedInterfaces=1` and `Attached ... openResult=0`; `TCC deny IOHIDDeviceOpen`
+means the app must be removed and re-added after signing. Accessibility is also
+needed for on-screen hint activation, and Microphone is needed for dictation.
 
 ## Pad profile
 

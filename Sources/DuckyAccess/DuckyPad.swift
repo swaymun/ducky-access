@@ -1,5 +1,6 @@
 import Foundation
 import IOKit.hid
+import OSLog
 
 final class DuckyPadDetector {
     static let vendorID = 0x0483
@@ -10,6 +11,9 @@ final class DuckyPadDetector {
     private var pollTimer: Timer?
     private var reportModifiers: UInt8 = 0
     private var reportPressedKeys = Set<UInt8>()
+    private var reportBuffers: [ObjectIdentifier: UnsafeMutablePointer<UInt8>] = [:]
+    private var devices: [ObjectIdentifier: IOHIDDevice] = [:]
+    private let logger = Logger(subsystem: "com.swaymun.ducky-access", category: "hid")
     var onChange: ((Bool) -> Void)?
     var onInputValue: ((UInt32, Int64) -> Void)?
     private(set) var connected = false
@@ -17,39 +21,44 @@ final class DuckyPadDetector {
     func start() {
         guard !started else { return }
         started = true
-        let matches = Self.productIDs.map { [kIOHIDVendorIDKey as String: Self.vendorID, kIOHIDProductIDKey as String: $0] }
+        let matches = Self.productIDs.map {
+            [
+                kIOHIDVendorIDKey as String: Self.vendorID,
+                kIOHIDProductIDKey as String: $0,
+                kIOHIDPrimaryUsagePageKey as String: 0x01,
+                kIOHIDPrimaryUsageKey as String: 0x06
+            ]
+        }
         IOHIDManagerSetDeviceMatchingMultiple(manager, matches as CFArray)
         let context = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-        IOHIDManagerRegisterDeviceMatchingCallback(manager, { context, _, _, _ in
+        IOHIDManagerRegisterDeviceMatchingCallback(manager, { context, _, _, device in
             guard let context else { return }
             let detector = Unmanaged<DuckyPadDetector>.fromOpaque(context).takeUnretainedValue()
+            detector.attach(device)
             DispatchQueue.main.async {
                 detector.connected = true
                 detector.onChange?(true)
             }
         }, context)
-        IOHIDManagerRegisterDeviceRemovalCallback(manager, { context, _, _, _ in
+        IOHIDManagerRegisterDeviceRemovalCallback(manager, { context, _, _, device in
             guard let context else { return }
             let detector = Unmanaged<DuckyPadDetector>.fromOpaque(context).takeUnretainedValue()
+            detector.detach(device)
             DispatchQueue.main.async {
                 detector.connected = false
                 detector.onChange?(false)
             }
         }, context)
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
-        IOHIDManagerRegisterInputValueCallback(manager, { context, result, _, value in
-            guard result == kIOReturnSuccess, let context else { return }
-            let detector = Unmanaged<DuckyPadDetector>.fromOpaque(context).takeUnretainedValue()
-            let element = IOHIDValueGetElement(value)
-            guard IOHIDElementGetUsagePage(element) == 0x07 else { return }
-            detector.onInputValue?(IOHIDElementGetUsage(element), Int64(IOHIDValueGetIntegerValue(value)))
-        }, context)
-        IOHIDManagerRegisterInputReportCallback(manager, { context, result, _, _, reportID, report, reportLength in
-            guard result == kIOReturnSuccess, let context, reportLength >= 4 else { return }
-            let detector = Unmanaged<DuckyPadDetector>.fromOpaque(context).takeUnretainedValue()
-            detector.receiveReport(report, length: reportLength, reportID: reportID)
-        }, context)
-        _ = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        let managerResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        if let set = IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> {
+            for device in set {
+                attach(device)
+            }
+            logger.info("DuckyPad keyboard manager openResult=\(managerResult, privacy: .public) matchedInterfaces=\(set.count, privacy: .public)")
+        } else {
+            logger.info("DuckyPad keyboard manager openResult=\(managerResult, privacy: .public) matchedInterfaces=0")
+        }
         refresh(notifyEvenIfUnchanged: true)
         // Some macOS privacy configurations deny IOHIDManagerOpen even when
         // the pad is visible to hidutil. Polling the matched device set keeps
@@ -62,6 +71,34 @@ final class DuckyPadDetector {
         guard notifyEvenIfUnchanged || next != connected else { return }
         connected = next
         onChange?(next)
+    }
+
+    private func attach(_ device: IOHIDDevice) {
+        let key = ObjectIdentifier(device)
+        guard reportBuffers[key] == nil else { return }
+
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 64)
+        buffer.initialize(repeating: 0, count: 64)
+        reportBuffers[key] = buffer
+        devices[key] = device
+
+        let context = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        let openResult = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone))
+        IOHIDDeviceRegisterInputReportCallback(device, buffer, 64, { context, result, _, _, reportID, report, reportLength in
+            guard result == kIOReturnSuccess, let context, reportLength >= 4 else { return }
+            let detector = Unmanaged<DuckyPadDetector>.fromOpaque(context).takeUnretainedValue()
+            detector.receiveReport(report, length: reportLength, reportID: reportID)
+        }, context)
+        logger.info("Attached DuckyPad keyboard interface openResult=\(openResult, privacy: .public)")
+    }
+
+    private func detach(_ device: IOHIDDevice) {
+        let key = ObjectIdentifier(device)
+        guard reportBuffers[key] != nil else { return }
+        IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone))
+        reportBuffers.removeValue(forKey: key)?.deallocate()
+        devices.removeValue(forKey: key)
+        logger.info("Detached DuckyPad keyboard interface")
     }
 
     private func receiveReport(_ report: UnsafeMutablePointer<UInt8>, length: CFIndex, reportID: UInt32) {

@@ -246,11 +246,15 @@ final class DuckyAccessController: NSObject {
         let recent = history.recent
         if recent.isEmpty { let empty = NSMenuItem(title: "No dictations yet", action: nil, keyEquivalent: ""); empty.isEnabled = false; menu.addItem(empty) }
         for record in recent { menu.addItem(dictationMenu(record)) }
-        menu.addItem(NSMenuItem(title: "All dictations…", action: #selector(showHistory(_:)), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Help & keyboard map…", action: #selector(showHelp(_:)), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Delete all dictations…", action: #selector(clearHistory(_:)), keyEquivalent: ""))
+        let historyItem = NSMenuItem(title: "All dictations…", action: #selector(showHistory(_:)), keyEquivalent: "")
+        historyItem.target = self; menu.addItem(historyItem)
+        let helpItem = NSMenuItem(title: "Help & keyboard map…", action: #selector(showHelp(_:)), keyEquivalent: "")
+        helpItem.target = self; menu.addItem(helpItem)
+        let clearHistoryItem = NSMenuItem(title: "Delete all dictations…", action: #selector(clearHistory(_:)), keyEquivalent: "")
+        clearHistoryItem.target = self; menu.addItem(clearHistoryItem)
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit Ducky Access", action: #selector(quit(_:)), keyEquivalent: "q"))
+        let quitItem = NSMenuItem(title: "Quit Ducky Access", action: #selector(quit(_:)), keyEquivalent: "q")
+        quitItem.target = self; menu.addItem(quitItem)
     }
 
     private func submenu(_ title: String, values: [String], selected: String, action: Selector) -> NSMenuItem {

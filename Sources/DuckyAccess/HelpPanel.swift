@@ -5,7 +5,11 @@ final class HelpPanelController {
     private var window: NSWindow?
 
     func show() {
-        if let window { window.makeKeyAndOrderFront(nil); return }
+        if let window {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
         let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 560, height: 610))
         view.loadHTMLString(Self.html, baseURL: nil)
         let window = NSWindow(contentRect: view.frame, styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
@@ -13,6 +17,7 @@ final class HelpPanelController {
         window.contentView = view
         window.center()
         window.isReleasedWhenClosed = false
+        NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         self.window = window
     }
