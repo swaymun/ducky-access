@@ -14,8 +14,13 @@ button, input, a { display: block; font: inherit; margin: 24px 0; padding: 10px;
 <h1 id="heading"></h1>
 <p>Only this tab's visible controls should have NAV labels.</p>
 <label id="field-label" for="field"></label><input id="field" type="text">
+<output id="focus-result" aria-live="polite">Field not focused</output>
 <button id="action" type="button">Activate test</button>
 <output id="result" aria-live="polite">Not activated</output>
+<button id="pointer-action" type="button">Pointer action</button>
+<output id="pointer-result" aria-live="polite">Pointer action not activated</output>
+<a id="test-link" href="#link-destination">Navigate test link</a>
+<output id="link-destination" aria-live="polite">Link not followed</output>
 <button type="button" disabled>Disabled: no NAV label</button>
 <button type="button" hidden>Hidden: no NAV label</button>
 <div class="below"><button id="bottom" type="button">Below fold: label only after scrolling</button></div>
@@ -27,7 +32,13 @@ document.body.classList.toggle('beta', page === 'Beta');
 document.querySelector('#heading').textContent = `NAV ${page}`;
 document.querySelector('#field-label').textContent = `${page} field`;
 document.querySelector('#action').textContent = `${page} action`;
-document.querySelector('#action').onclick = () => { document.querySelector('#result').textContent = `${page} activated`; };
+let clicks = 0, pointerDowns = 0;
+document.querySelector('#field').onfocus = () => { document.querySelector('#focus-result').textContent = `${page} field focused`; };
+document.querySelector('#action').onclick = () => { document.querySelector('#result').textContent = `${page} activated ${++clicks} time(s)`; };
+// Some web controls (for example pointer-driven tabs/menus) react to pointerdown,
+// not the synthetic click produced by AXPress. Keep this as a regression case.
+document.querySelector('#pointer-action').onpointerdown = () => { document.querySelector('#pointer-result').textContent = `${page} pointer activated ${++pointerDowns} time(s)`; };
+window.onhashchange = () => { document.querySelector('#link-destination').textContent = `${page} link followed`; };
 document.querySelector('#bottom').onclick = () => { document.querySelector('#bottom').textContent = `${page} bottom activated`; };
 </script>
 </html>

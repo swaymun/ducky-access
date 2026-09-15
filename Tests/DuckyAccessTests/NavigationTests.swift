@@ -115,14 +115,15 @@ final class NavigationTests: XCTestCase {
         let fixture = Tree()
         let root = fixture.node(role: "AXWindow")
         let element = fixture.node(role: "AXButton")
-        func snapshot(document: String = "first", frame: CGRect? = nil, target: AXUIElement? = nil) -> NavigationSnapshot {
+        func snapshot(document: String = "first", frame: CGRect? = nil, target: AXUIElement? = nil, screens: [CGRect]? = nil) -> NavigationSnapshot {
             NavigationSnapshot(pid: 10, window: root.element, frame: root.frame!, document: document, webAreas: [],
-                hints: [.init(code: "AA", frame: frame ?? element.frame!, element: target ?? element.element, label: "Test")], visited: 2, limited: false)
+                hints: [.init(code: "AA", frame: frame ?? element.frame!, element: target ?? element.element, label: "Test")], visited: 2, limited: false, screens: screens ?? [root.frame!])
         }
         XCTAssertTrue(snapshot().matches(snapshot()))
         XCTAssertFalse(snapshot().matches(snapshot(document: "second")))
         XCTAssertFalse(snapshot().matches(snapshot(frame: CGRect(x: 15, y: 15, width: 30, height: 30))))
         XCTAssertFalse(snapshot().matches(snapshot(target: fixture.node(role: "AXButton").element)))
+        XCTAssertFalse(snapshot().matches(snapshot(screens: [CGRect(x: -3440, y: 0, width: 3440, height: 1440)])))
     }
 
     func testUnsupportedActionsInvalidFramesAndDepthAreBounded() {
@@ -146,7 +147,7 @@ final class NavigationTests: XCTestCase {
         let fixture = Tree()
         let root = fixture.node(role: "AXWindow"), first = fixture.node(role: "AXWebArea"), second = fixture.node(role: "AXWebArea")
         func snapshot(_ area: AXUIElement, _ url: String) -> NavigationSnapshot {
-            NavigationSnapshot(pid: 10, window: root.element, frame: root.frame!, document: "", webAreas: [(area, url)], hints: [], visited: 2, limited: false)
+            NavigationSnapshot(pid: 10, window: root.element, frame: root.frame!, document: "", webAreas: [(area, url)], hints: [], visited: 2, limited: false, screens: [root.frame!])
         }
         XCTAssertFalse(snapshot(first.element, "first").hasSameContext(as: snapshot(first.element, "second")))
         XCTAssertFalse(snapshot(first.element, "same").hasSameContext(as: snapshot(second.element, "same")))

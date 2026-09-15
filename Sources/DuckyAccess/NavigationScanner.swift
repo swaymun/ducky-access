@@ -87,8 +87,9 @@ struct NavigationSnapshot {
     let hints: [AccessibilityHint]
     let visited: Int
     let limited: Bool
+    let screens: [CGRect] // AX-global display rectangles used for this scan.
     func hasSameContext(as other: Self) -> Bool {
-        pid == other.pid && CFEqual(window, other.window) && frame == other.frame && document == other.document &&
+        pid == other.pid && CFEqual(window, other.window) && frame == other.frame && document == other.document && screens == other.screens &&
         webAreas.count == other.webAreas.count && zip(webAreas, other.webAreas).allSatisfy { CFEqual($0.0, $1.0) && $0.1 == $1.1 }
     }
     func matches(_ other: Self) -> Bool {
@@ -149,7 +150,7 @@ enum NavigationScanner {
         guard ticket.active, let current = axElement(attribute(app, kAXFocusedWindowAttribute)), CFEqual(window, current),
               read(current)?.frame == frame, (attribute(current, kAXDocumentAttribute) as? String ?? "") == document else { return nil }
         return NavigationSnapshot(pid: pid, window: window, frame: frame, document: document, webAreas: result.webAreas,
-                                  hints: result.hints, visited: result.visited, limited: result.limited)
+                                  hints: result.hints, visited: result.visited, limited: result.limited, screens: screens)
     }
 
     struct Collection {
@@ -206,7 +207,7 @@ enum NavigationScanner {
         guard ticket.active else { return false }
         // A fresh bounded walk proves the element is still in the selected
         // window/tab and visible. Old web-area handles alone do not prove that.
-        guard let current = scan(pid: snapshot.pid, screens: [snapshot.frame], ticket: ticket),
+        guard let current = scan(pid: snapshot.pid, screens: snapshot.screens, ticket: ticket),
               current.hasSameContext(as: snapshot),
               current.hints.contains(where: { CFEqual($0.element, hint.element) && $0.frame == hint.frame && $0.label == hint.label }) else { return false }
         return ticket.active

@@ -102,8 +102,13 @@ old labels. While NAV is open, a background refresh every 800 ms also catches
 page updates and window movement. Scans use batched AX reads, a 650 ms traversal
 budget, 80 ms per-request timeouts, and node/depth/225-visible-hint limits. A slow
 in-flight AX request can extend the budget; it does not run on the UI thread.
-The selected target is revalidated before activation. Cancelled results cannot
-restore the overlay, and timed-out actions are never automatically retried.
+The selected target is revalidated before activation. NAV sends one unmodified
+mouse click to the selected app after an AX hit-test confirms the target (or
+its non-interactive text/image child); it refuses clicks covered by a different
+control. This supports pointer-driven web controls and focuses input boxes.
+Menu items use AX activation. Click points use the visible portion on a display,
+not the potentially off-screen center of a spanning control. Cancelled results
+cannot restore the overlay, and dispatched actions are never automatically retried.
 Electron apps receive the documented `AXManualAccessibility` opt-in; no browser
 restart or extension is required. Websites still need accessible controls.
 While NAV is open, encoder scrolling targets the focused window rather than
@@ -113,7 +118,8 @@ For manual regression checks, open `Tests/Fixtures/navigation.html?page=alpha`
 and `?page=beta` as local Chrome tabs. Switch tabs with NAV open, scroll to the
 bottom control, and try the same window on each monitor. Check that labels
 follow the visible page, omit hidden/disabled controls, and activate the named
-test button. Separately verify Codex on each monitor and rapid NAV → ESC during
+test button exactly once, the pointer-driven button, input focus, and test link.
+Separately verify Codex on each monitor and rapid NAV → ESC during
 collection. Unit tests alone do not establish these physical/UI acceptance gates.
 
 ### Spoken shortcuts
