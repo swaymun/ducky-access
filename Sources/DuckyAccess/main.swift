@@ -5,7 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         controller.start(showHelpOnLaunch: CommandLine.arguments.contains("--demo"))
     }
-    func applicationWillTerminate(_ notification: Notification) { controller.cancelCommand(); controller.appSwitcher.cancel(); controller.keyboard.stop(); controller.appServer.stop() }
+    func applicationWillTerminate(_ notification: Notification) { controller.cancelCommand(); controller.navigator.close(); controller.appSwitcher.cancel(); controller.keyboard.stop(); controller.appServer.stop() }
 }
 
 let application = NSApplication.shared

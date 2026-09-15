@@ -90,6 +90,32 @@ native macOS app switcher, turn to select, and press again or ENTER to activate.
 ESC cancels. An unattended switcher cancels after 30 seconds; it also cancels
 on disconnect or app exit. When closed, that knob scrolls as before.
 
+### Navigation hints
+
+Press **NAV** to label visible, enabled controls in the focused window; enter
+their two-letter A–O code to activate. Labels are drawn separately on each
+display, including windows spanning displays. Typing the first hint letter
+filters the labels. NAV or the pad's ESC dismisses them, including during a scan.
+
+Tab-switch keys, clicks, scrolling, app switches, and display changes invalidate
+old labels. While NAV is open, a background refresh every 800 ms also catches
+page updates and window movement. Scans use batched AX reads, a 650 ms traversal
+budget, 80 ms per-request timeouts, and node/depth/225-visible-hint limits. A slow
+in-flight AX request can extend the budget; it does not run on the UI thread.
+The selected target is revalidated before activation. Cancelled results cannot
+restore the overlay, and timed-out actions are never automatically retried.
+Electron apps receive the documented `AXManualAccessibility` opt-in; no browser
+restart or extension is required. Websites still need accessible controls.
+While NAV is open, encoder scrolling targets the focused window rather than
+the window under the mouse. Starting DICT/CMD closes NAV.
+
+For manual regression checks, open `Tests/Fixtures/navigation.html?page=alpha`
+and `?page=beta` as local Chrome tabs. Switch tabs with NAV open, scroll to the
+bottom control, and try the same window on each monitor. Check that labels
+follow the visible page, omit hidden/disabled controls, and activate the named
+test button. Separately verify Codex on each monitor and rapid NAV → ESC during
+collection. Unit tests alone do not establish these physical/UI acceptance gates.
+
 ### Spoken shortcuts
 
 Use **CMD**, say one shortcut, then press **CMD** again:

@@ -54,6 +54,7 @@ final class DuckyAccessController: NSObject {
         }
         keyboard.filterUnmatchedEvent = { [weak self] type, event in
             guard let self else { return event }
+            self.navigator.inputChanged(type)
             return self.appSwitcher.filterEvent(type, event)
         }
         navigator.onError = { [weak self] message in self?.lastError = message; self?.rebuildMenu() }
@@ -135,6 +136,7 @@ final class DuckyAccessController: NSObject {
         if recordingMode != nil { stopRecording(); return }
         guard status != .formatting else { NSSound.beep(); return }
         guard speech.modelReady else { NSSound.beep(); lastError = "Parakeet is still loading"; rebuildMenu(); return }
+        navigator.close()
         lastError = nil
         recordingMode = mode
         let id = mode == .command ? UUID() : nil

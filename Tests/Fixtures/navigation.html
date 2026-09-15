@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Ducky NAV test</title>
+<style>
+body { font: 20px system-ui; margin: 40px; background: #f8f8f8; color: #171717; }
+main { max-width: 460px; }
+body.beta main { margin-left: 45vw; padding-top: 15vh; }
+button, input, a { display: block; font: inherit; margin: 24px 0; padding: 10px; }
+[hidden] { display: none !important; }
+.below { margin-top: 1600px; }
+</style>
+<main>
+<h1 id="heading"></h1>
+<p>Only this tab's visible controls should have NAV labels.</p>
+<label id="field-label" for="field"></label><input id="field" type="text">
+<button id="action" type="button">Activate test</button>
+<output id="result" aria-live="polite">Not activated</output>
+<button type="button" disabled>Disabled: no NAV label</button>
+<button type="button" hidden>Hidden: no NAV label</button>
+<div class="below"><button id="bottom" type="button">Below fold: label only after scrolling</button></div>
+</main>
+<script>
+const page = new URLSearchParams(location.search).get('page') === 'beta' ? 'Beta' : 'Alpha';
+document.title = `Ducky NAV ${page}`;
+document.body.classList.toggle('beta', page === 'Beta');
+document.querySelector('#heading').textContent = `NAV ${page}`;
+document.querySelector('#field-label').textContent = `${page} field`;
+document.querySelector('#action').textContent = `${page} action`;
+document.querySelector('#action').onclick = () => { document.querySelector('#result').textContent = `${page} activated`; };
+document.querySelector('#bottom').onclick = () => { document.querySelector('#bottom').textContent = `${page} bottom activated`; };
+</script>
+</html>

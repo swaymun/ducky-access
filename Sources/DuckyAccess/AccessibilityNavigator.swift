@@ -4,192 +4,217 @@ import OSLog
 
 struct AccessibilityHint {
     let code: String
-    let frame: CGRect
+    let frame: CGRect // AX global coordinates, never screen-local.
     let element: AXUIElement
     let label: String
 }
 
+/// UI state is main-thread owned; all cross-process AX calls run on `worker`.
 final class AccessibilityNavigator {
-    private let alphabet = Array("ABCDEFGHIJKLMNO")
     private(set) var active = false
     private(set) var prefix = ""
-    private var hints: [AccessibilityHint] = []
-    private var window: NSPanel?
-    private var overlay: HintOverlayView?
+    private var snapshot: NavigationSnapshot?
+    private var panels: [NSPanel] = []
+    private var refreshTimer: Timer?
+    private var workspaceObserver: NSObjectProtocol?
+    private var screenObserver: NSObjectProtocol?
+    private var refreshWork: DispatchWorkItem?
+    private let worker = DispatchQueue(label: "ducky.navigation.accessibility", qos: .userInitiated)
+    private let lifetime = NavigationLifetime()
+    private var scanSchedule = NavigationScanSchedule()
+    private var activating = false
+    private var electronOptIn = NavigationElectronOptIn() // Worker-owned.
     var onError: ((String) -> Void)?
     private let logger = Logger(subsystem: "com.swaymun.ducky-access", category: "navigation")
 
-    func toggle() {
-        active ? close() : show()
-    }
+    func toggle() { active ? close() : show() }
 
     func backspace() {
-        guard active else { return }
-        guard !prefix.isEmpty else { return }
-        prefix.removeLast()
-        overlay?.prefix = prefix
-        overlay?.needsDisplay = true
+        guard active, !prefix.isEmpty else { return }
+        prefix.removeLast(); updatePrefix()
     }
 
     func handle(_ letter: Character) {
-        guard active else { return }
+        guard active, !activating, let snapshot else { return }
+        guard snapshot.pid == NSWorkspace.shared.frontmostApplication?.processIdentifier else { invalidate(); return }
         prefix.append(letter)
-        if let hint = hints.first(where: { $0.code == prefix }) {
-            activate(hint)
-            close()
-        } else if !hints.contains(where: { $0.code.hasPrefix(prefix) }) {
-            NSSound.beep()
-            prefix = ""
-        }
-        overlay?.prefix = prefix
-        overlay?.needsDisplay = true
+        if let hint = snapshot.hints.first(where: { $0.code == prefix }) { activate(hint, in: snapshot) }
+        else if !snapshot.hints.contains(where: { $0.code.hasPrefix(prefix) }) { NSSound.beep(); prefix = "" }
+        updatePrefix()
     }
 
     func scroll(_ amount: Int) {
-        guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: Int32(amount), wheel2: 0, wheel3: 0) else { return }
-        event.post(tap: .cghidEventTap)
+        let target = active ? snapshot : nil
+        if active, target == nil || target?.pid != NSWorkspace.shared.frontmostApplication?.processIdentifier { invalidate(); return }
+        invalidate()
+        guard let source = CGEventSource(stateID: .privateState),
+              let event = CGEvent(scrollWheelEvent2Source: source, units: .line, wheelCount: 2, wheel1: Int32(amount), wheel2: 0, wheel3: 0) else { return }
+        event.setIntegerValueField(.eventSourceUserData, value: KeyboardOutput.eventTag)
+        if let target {
+            event.location = CGPoint(x: target.frame.midX, y: target.frame.midY)
+            event.postToPid(target.pid)
+        } else { event.post(tap: .cghidEventTap) }
+    }
+
+    /// Called only for unmatched events: pad hint letters never invalidate themselves.
+    func inputChanged(_ type: CGEventType) {
+        if [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel].contains(type) { invalidate() }
     }
 
     func close() {
-        active = false
-        prefix = ""
-        window?.orderOut(nil)
-        window = nil
-        overlay = nil
-        hints.removeAll()
+        active = false; activating = false
+        lifetime.invalidate(); scanSchedule.cancelPending()
+        refreshWork?.cancel(); refreshWork = nil
+        refreshTimer?.invalidate(); refreshTimer = nil
+        if let workspaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver) }
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        workspaceObserver = nil; screenObserver = nil
+        clearHints()
     }
 
     private func show() {
         guard AXIsProcessTrusted() else {
-            logger.error("NAV blocked: Accessibility permission is not valid for this build")
-            onError?("Re-add /Applications/DuckyAccess.app in Privacy & Security → Accessibility, enable it, then relaunch.")
-            NSSound.beep()
-            return
+            onError?("Enable Ducky Access in Privacy & Security → Accessibility, then relaunch."); return
         }
-        guard let app = NSWorkspace.shared.frontmostApplication else { return }
-        let axApp = AXUIElementCreateApplication(app.processIdentifier)
-        hints = collect(from: axApp)
-        logger.info("NAV collected hints=\(self.hints.count) destinationPID=\(app.processIdentifier)")
-        guard !hints.isEmpty else { onError?("No accessible controls found in the current app."); return }
         active = true
-        prefix = ""
-        let screen = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
-        let view = HintOverlayView(frame: CGRect(origin: .zero, size: screen.size))
-        view.hints = hints
-        view.onEscape = { [weak self] in self?.close() }
-        let panel = NSPanel(contentRect: screen, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.level = .statusBar
-        panel.ignoresMouseEvents = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentView = view
-        panel.orderFrontRegardless()
-        window = panel
-        overlay = view
+        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in self?.invalidate() }
+        screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in self?.invalidate() }
+        let timer = Timer(timeInterval: 0.8, repeats: true) { [weak self] _ in
+            guard let self, !self.activating else { return }
+            self.scan(fallback: true) // A busy fallback tick is dropped, never queued.
+        }
+        refreshTimer = timer; RunLoop.main.add(timer, forMode: .common)
+        scan()
     }
 
-    private func collect(from root: AXUIElement) -> [AccessibilityHint] {
-        var elements: [(AXUIElement, CGRect, String)] = []
-        var windowsValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(root, kAXWindowsAttribute as CFString, &windowsValue) == .success,
-           let windows = windowsValue as? [AXUIElement] {
-            for item in windows { walk(item, into: &elements) }
-        } else {
-            walk(root, into: &elements)
-        }
-        let unique = elements.filter { item in
-            item.1.width > 4 && item.1.height > 4
-        }.prefix(225)
-        return unique.enumerated().map { index, item in
-            let code = String(alphabet[index / 15]) + String(alphabet[index % 15])
-            return AccessibilityHint(code: code, frame: convert(item.1), element: item.0, label: item.2)
+    private func invalidate() {
+        guard active else { return }
+        lifetime.invalidate() // Cancel old work before another hint can be selected.
+        activating = false; clearHints()
+        // Coalesce, but do not push the deadline back on every scroll/key event.
+        guard refreshWork == nil else { return }
+        let work = DispatchWorkItem { [weak self] in self?.refreshWork = nil; self?.scan() }
+        refreshWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+
+    private func scan(fallback: Bool = false) {
+        guard active, !activating else { return }
+        guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { close(); return }
+        let pid = app.processIdentifier
+        let screens = NSScreen.screens.map(\.frame)
+        guard let primary = screens.first else { return }
+        let visibleScreens = screens.map { NavigationGeometry.axRect(fromAppKit: $0, primaryTop: primary.maxY) }
+        let isElectron = app.bundleURL.map { FileManager.default.fileExists(atPath: $0.appendingPathComponent("Contents/Frameworks/Electron Framework.framework").path) } ?? false
+        let launchDate = app.launchDate ?? .distantPast
+        let ticket = lifetime.current
+        guard scanSchedule.begin(fallback: fallback) else { return }
+        worker.async { [weak self] in
+            guard let self else { return }
+            let start = ProcessInfo.processInfo.systemUptime
+            if isElectron, ticket.active, self.electronOptIn.shouldAttempt(pid: pid, launchDate: launchDate) {
+                let root = AXUIElementCreateApplication(pid)
+                AXUIElementSetMessagingTimeout(root, 0.08)
+                // Electron's documented AT opt-in. Do not toggle
+                // AXEnhancedUserInterface, which can affect other AT clients.
+                if AXUIElementSetAttributeValue(root, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success { self.electronOptIn.succeeded(pid: pid) }
+            }
+            let result = NavigationScanner.scan(pid: pid, screens: visibleScreens, ticket: ticket)
+            let elapsed = Int((ProcessInfo.processInfo.systemUptime - start) * 1000)
+            DispatchQueue.main.async {
+                let refreshPending = self.scanSchedule.finish()
+                guard self.active else { return }
+                if self.lifetime.accepts(ticket), NSWorkspace.shared.frontmostApplication?.processIdentifier == pid, !self.activating {
+                    if let result {
+                        let changed = self.snapshot.map { !$0.matches(result) } ?? true
+                        self.snapshot = result
+                        if changed {
+                            self.prefix = ""
+                            self.render(result, screens: screens, primaryTop: primary.maxY)
+                            self.logger.info("NAV snapshot pid=\(pid) hints=\(result.hints.count) nodes=\(result.visited) ms=\(elapsed) limited=\(result.limited) displays=\(self.panels.count)")
+                        }
+                    } else { self.clearHints() }
+                }
+                if refreshPending { self.scan() }
+            }
         }
     }
 
-    private func walk(_ element: AXUIElement, into result: inout [(AXUIElement, CGRect, String)]) {
-        var roleValue: CFTypeRef?
-        var titleValue: CFTypeRef?
-        var descValue: CFTypeRef?
-        var positionValue: CFTypeRef?
-        var sizeValue: CFTypeRef?
-        _ = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue)
-        _ = AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleValue)
-        _ = AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute as CFString, &descValue)
-        _ = AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue)
-        _ = AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue)
-        let role = roleValue as? String ?? ""
-        let actionableRoles: Set<String> = [
-            "AXButton", "AXLink", "AXMenuItem", "AXTextField", "AXTextArea",
-            "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXComboBox",
-            "AXSlider", "AXTabGroup", "AXCell"
-        ]
-        if actionableRoles.contains(role), let frame = rect(position: positionValue, size: sizeValue) {
-            let title = (titleValue as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let desc = (descValue as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            result.append((element, frame, title.isEmpty ? desc : title))
-        }
-        var childrenValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
-           let children = childrenValue as? [AXUIElement] {
-            for child in children { walk(child, into: &result) }
+    private func clearHints() {
+        prefix = ""; snapshot = nil
+        panels.forEach { $0.orderOut(nil) }; panels.removeAll()
+    }
+
+    private func render(_ snapshot: NavigationSnapshot, screens: [CGRect], primaryTop: CGFloat) {
+        panels.forEach { $0.orderOut(nil) }; panels.removeAll()
+        for screen in screens {
+            let labels = snapshot.hints.compactMap { hint -> HintOverlayView.Label? in
+                guard let frame = NavigationGeometry.localRect(hint.frame, screen: screen, primaryTop: primaryTop) else { return nil }
+                return .init(code: hint.code, frame: frame)
+            }
+            guard !labels.isEmpty else { continue }
+            let view = HintOverlayView(frame: CGRect(origin: .zero, size: screen.size)); view.labels = labels
+            let panel = NSPanel(contentRect: screen, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.title = "Ducky navigation hints"
+            panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
+            panel.level = .statusBar; panel.ignoresMouseEvents = true
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.contentView = view; panel.orderFrontRegardless(); panels.append(panel)
         }
     }
 
-    private func rect(position: CFTypeRef?, size: CFTypeRef?) -> CGRect? {
-        guard let position, let size,
-              CFGetTypeID(position) == AXValueGetTypeID(),
-              CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
-        var origin = CGPoint.zero
-        var dimensions = CGSize.zero
-        guard AXValueGetValue(position as! AXValue, .cgPoint, &origin),
-              AXValueGetValue(size as! AXValue, .cgSize, &dimensions) else { return nil }
-        return CGRect(origin: origin, size: dimensions)
-    }
-
-    private func convert(_ rect: CGRect) -> CGRect {
-        let screen = NSScreen.main?.frame ?? .zero
-        return CGRect(x: rect.minX, y: screen.height - rect.maxY, width: rect.width, height: rect.height)
-    }
-
-    private func activate(_ hint: AccessibilityHint) {
-        var roleValue: CFTypeRef?
-        _ = AXUIElementCopyAttributeValue(hint.element, kAXRoleAttribute as CFString, &roleValue)
-        let role = roleValue as? String ?? ""
-        let result: AXError
-        if role == "AXTextField" || role == "AXTextArea" || role == "AXComboBox" {
-            result = AXUIElementSetAttributeValue(hint.element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        } else {
-            result = AXUIElementPerformAction(hint.element, kAXPressAction as CFString)
+    private func updatePrefix() {
+        for panel in panels {
+            guard let view = panel.contentView as? HintOverlayView else { continue }
+            view.prefix = prefix; view.needsDisplay = true
         }
-        logger.info("NAV activate role=\(role, privacy: .public) result=\(result.rawValue)")
-        if result != .success { NSSound.beep() }
+    }
+
+    private func activate(_ hint: AccessibilityHint, in snapshot: NavigationSnapshot) {
+        activating = true
+        let ticket = lifetime.current
+        worker.async { [weak self] in
+            guard let self else { return }
+            let valid = NavigationScanner.isCurrent(snapshot, hint: hint, ticket: ticket)
+            let role = valid ? (NavigationScanner.attribute(hint.element, kAXRoleAttribute) as? String ?? "") : ""
+            let foreground = DispatchQueue.main.sync { self.active && self.lifetime.accepts(ticket) && NSWorkspace.shared.frontmostApplication?.processIdentifier == snapshot.pid }
+            var result: AXError = .invalidUIElement
+            if valid, foreground {
+                // Serialize final dispatch against cancellation. An already
+                // dispatched AX action may finish; a timeout is never retried.
+                AXUIElementSetMessagingTimeout(hint.element, 0.15)
+                result = ticket.performIfActive {
+                    let app = AXUIElementCreateApplication(snapshot.pid)
+                    guard NavigationScanner.attribute(app, kAXFrontmostAttribute) as? Bool == true,
+                          let focused = NavigationScanner.axElement(NavigationScanner.attribute(app, kAXFocusedWindowAttribute)),
+                          CFEqual(focused, snapshot.window) else { return .invalidUIElement }
+                    if NavigationScanner.editableRoles.contains(role) { return AXUIElementSetAttributeValue(hint.element, kAXFocusedAttribute as CFString, kCFBooleanTrue) }
+                    return AXUIElementPerformAction(hint.element, kAXPressAction as CFString)
+                } ?? .invalidUIElement
+            }
+            DispatchQueue.main.async {
+                guard self.active, self.lifetime.accepts(ticket) else { return }
+                self.activating = false
+                self.logger.info("NAV activate result=\(result.rawValue) fresh=\(valid)")
+                if result == .success { self.close() }
+                else { self.invalidate(); self.onError?("The target changed or could not be activated. NAV refreshed; choose its new label.") }
+            }
+        }
     }
 }
 
 final class HintOverlayView: NSView {
-    var hints: [AccessibilityHint] = []
+    struct Label { let code: String; let frame: CGRect }
+    var labels: [Label] = []
     var prefix = ""
-    var onEscape: (() -> Void)?
-
-    override var acceptsFirstResponder: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
         NSColor.clear.setFill(); dirtyRect.fill()
-        for hint in hints {
-            let rect = hint.frame.insetBy(dx: 1, dy: 1)
-            let labelRect = CGRect(x: rect.minX, y: rect.maxY - 21, width: max(24, CGFloat(hint.code.count * 10 + 10)), height: 20)
+        for label in labels where label.code.hasPrefix(prefix) {
+            let labelRect = NavigationGeometry.labelRect(for: label.frame, in: bounds)
             NSColor(calibratedRed: 0.08, green: 0.12, blue: 0.22, alpha: 0.94).setFill()
             NSBezierPath(roundedRect: labelRect, xRadius: 5, yRadius: 5).fill()
-            let text = NSAttributedString(string: hint.code, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold), .foregroundColor: NSColor.white])
+            let text = NSAttributedString(string: label.code, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold), .foregroundColor: NSColor.white])
             text.draw(at: CGPoint(x: labelRect.minX + 5, y: labelRect.minY + 3))
-        }
-        if !prefix.isEmpty {
-            let text = NSAttributedString(string: prefix, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 18, weight: .bold), .foregroundColor: NSColor.white])
-            let size = text.size()
-            let box = CGRect(x: bounds.midX - size.width / 2 - 12, y: bounds.maxY - 70, width: size.width + 24, height: size.height + 14)
-            NSColor(calibratedRed: 0.08, green: 0.12, blue: 0.22, alpha: 0.94).setFill()
-            NSBezierPath(roundedRect: box, xRadius: 8, yRadius: 8).fill()
-            text.draw(at: CGPoint(x: box.minX + 12, y: box.minY + 7))
         }
     }
 }

@@ -162,7 +162,7 @@ final class KeyboardRouter {
 
     private func startEventTap() {
         guard tap == nil else { return }
-        let mask = [CGEventType.keyDown, .keyUp, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+        let mask = [CGEventType.keyDown, .keyUp, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]
             .reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
         let context = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
         tap = CGEvent.tapCreate(

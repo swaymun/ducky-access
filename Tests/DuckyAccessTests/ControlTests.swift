@@ -71,6 +71,20 @@ final class ControlTests: XCTestCase {
         XCTAssertNotNil(router.processEvent(.keyDown, event(key: 17, down: true, flags: .maskCommand)))
     }
 
+    func testGeneratedScrollCannotInvalidateNavigationTwice() throws {
+        let router = KeyboardRouter()
+        var invalidations = 0
+        router.filterUnmatchedEvent = { _, event in invalidations += 1; return event }
+        let scroll = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: CGEventSource(stateID: .privateState), units: .line, wheelCount: 1, wheel1: 3, wheel2: 0, wheel3: 0))
+        scroll.setIntegerValueField(.eventSourceUserData, value: KeyboardOutput.eventTag)
+        XCTAssertNotNil(router.processEvent(.scrollWheel, scroll))
+        XCTAssertEqual(invalidations, 0)
+        let physical = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: CGEventSource(stateID: .privateState), units: .line, wheelCount: 1, wheel1: 3, wheel2: 0, wheel3: 0))
+        XCTAssertNotEqual(physical.getIntegerValueField(.eventSourceUserData), KeyboardOutput.eventTag)
+        XCTAssertNotNil(router.processEvent(.scrollWheel, physical))
+        XCTAssertEqual(invalidations, 1)
+    }
+
     private func event(key: CGKeyCode, down: Bool, flags: CGEventFlags) -> CGEvent {
         let event = CGEvent(keyboardEventSource: CGEventSource(stateID: .privateState), virtualKey: key, keyDown: down)!
         event.flags = flags
