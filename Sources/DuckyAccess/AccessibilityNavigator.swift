@@ -180,7 +180,11 @@ final class AccessibilityNavigator {
             let role = valid ? (NavigationScanner.attribute(hint.element, kAXRoleAttribute) as? String ?? "") : ""
             let press = NavigationActivation.usesPress(role: role)
             let point = NavigationActivation.clickPoint(frame: hint.frame, screens: snapshot.screens)
-            let foreground = DispatchQueue.main.sync { self.active && self.lifetime.accepts(ticket) && NSWorkspace.shared.frontmostApplication?.processIdentifier == snapshot.pid }
+            let (foreground, windowNumber): (Bool, Int?) = DispatchQueue.main.sync {
+                let foreground = self.active && self.lifetime.accepts(ticket) && NSWorkspace.shared.frontmostApplication?.processIdentifier == snapshot.pid
+                guard foreground, let point, let primary = NSScreen.screens.first else { return (foreground, nil) }
+                return (true, NavigationActivation.destinationWindow(at: point, primaryTop: primary.frame.maxY, pid: snapshot.pid, frame: snapshot.frame))
+            }
             var result: AXError = .invalidUIElement
             var hit = false
             if valid, foreground {
@@ -189,12 +193,17 @@ final class AccessibilityNavigator {
                     guard NavigationScanner.attribute(app, kAXFrontmostAttribute) as? Bool == true,
                           let focused = NavigationScanner.axElement(NavigationScanner.attribute(app, kAXFocusedWindowAttribute)),
                           CFEqual(focused, snapshot.window), NavigationScanner.read(focused)?.frame == snapshot.frame else { return false }
-                    return true
+                    return DispatchQueue.main.sync {
+                        guard self.active, self.lifetime.accepts(ticket), NSWorkspace.shared.frontmostApplication?.processIdentifier == snapshot.pid else { return false }
+                        if press { return true }
+                        guard let point, let primary = NSScreen.screens.first, let windowNumber else { return false }
+                        return NavigationActivation.destinationWindow(at: point, primaryTop: primary.frame.maxY, pid: snapshot.pid, frame: snapshot.frame) == windowNumber
+                    }
                 }
                 if press, validateContext() {
                     AXUIElementSetMessagingTimeout(hint.element, 0.15)
                     result = ticket.performIfActive { AXUIElementPerformAction(hint.element, kAXPressAction as CFString) } ?? .invalidUIElement
-                } else if !press, CGPreflightPostEventAccess(), let point, let events = NavigationActivation.clickEvents(at: point) {
+                } else if !press, CGPreflightPostEventAccess(), let point, let windowNumber, let events = NavigationActivation.clickEvents(at: point, windowNumber: windowNumber) {
                     // PID-targeted delivery cannot click another app if focus
                     // changes immediately after the final check. Always pair up.
                     let sent = NavigationActivation.dispatchClick(events: events, ticket: ticket, validateContext: validateContext, validateHit: {
@@ -207,7 +216,7 @@ final class AccessibilityNavigator {
             DispatchQueue.main.async {
                 guard self.active, self.lifetime.accepts(ticket) else { return }
                 self.activating = false
-                self.logger.info("NAV dispatch code=\(hint.code, privacy: .public) role=\(role, privacy: .public) method=\(press ? "AXPress" : "click", privacy: .public) result=\(result.rawValue) fresh=\(valid) hit=\(hit) foreground=\(foreground)")
+                self.logger.info("NAV dispatch code=\(hint.code, privacy: .public) role=\(role, privacy: .public) method=\(press ? "AXPress" : "click", privacy: .public) window=\(windowNumber ?? 0) result=\(result.rawValue) fresh=\(valid) hit=\(hit) foreground=\(foreground)")
                 if result == .success { self.close() }
                 else { self.invalidate(); self.onError?("The target changed or could not be activated. NAV refreshed; choose its new label.") }
             }

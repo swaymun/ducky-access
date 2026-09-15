@@ -18,6 +18,29 @@ enum NavigationActivation {
         return CGPoint(x: visible.midX, y: visible.midY)
     }
 
+    /// Main-thread AppKit mouse-down hit test, including transparent/ignoring
+    /// windows. Verify its WindowServer owner and frame before addressing input.
+    static func destinationWindow(at point: CGPoint, primaryTop: CGFloat, pid: pid_t, frame: CGRect) -> Int? {
+        let appKitPoint = CGPoint(x: point.x, y: primaryTop - point.y)
+        let number = NSWindow.windowNumber(at: appKitPoint, belowWindowWithWindowNumber: 0)
+        guard number > 0, number <= Int(UInt32.max),
+              let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(number)) as? [[String: Any]])?.first,
+              matchesWindow(info, number: number, pid: pid, frame: frame, point: point) else { return nil }
+        return number
+    }
+
+    static func matchesWindow(_ info: [String: Any], number: Int, pid: pid_t, frame: CGRect, point: CGPoint) -> Bool {
+        guard number > 0, info[kCGWindowNumber as String] as? Int == number,
+              info[kCGWindowOwnerPID as String] as? Int == Int(pid),
+              info[kCGWindowIsOnscreen as String] as? Bool == true,
+              let bounds = info[kCGWindowBounds as String] as? [String: Any],
+              let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary), NavigationGeometry.usable(rect),
+              rect.contains(point) else { return false }
+        // AX/WindowServer can differ by subpoint rounding, not by another window.
+        return abs(rect.minX - frame.minX) <= 1 && abs(rect.minY - frame.minY) <= 1 &&
+            abs(rect.width - frame.width) <= 1 && abs(rect.height - frame.height) <= 1
+    }
+
     /// Accept a hit on the target or its non-interactive text/image descendants,
     /// never a different/nested control (e.g. a tab's close button).
     static func hitMatches(_ hit: AXUIElement, target: AXUIElement, ticket: NavigationTicket,
@@ -93,15 +116,25 @@ enum NavigationActivation {
 
     // Construct both events before dispatch, so construction failure cannot
     // leave a mouse button held. Tests inspect these without posting to the OS.
-    static func clickEvents(at point: CGPoint) -> [CGEvent]? {
-        guard point.x.isFinite, point.y.isFinite, let source = CGEventSource(stateID: .privateState),
-              let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
-              let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else { return nil }
-        for event in [down, up] {
+    static func clickEvents(at point: CGPoint, windowNumber: Int) -> [CGEvent]? {
+        guard point.x.isFinite, point.y.isFinite, windowNumber > 0, windowNumber <= Int(UInt32.max) else { return nil }
+        var events: [CGEvent] = []
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            // A bare CGEvent has AppKit windowNumber=0. postToPid bypasses the
+            // WindowServer annotation stage, so AppKit silently drops it. Start
+            // with a window-addressed NSEvent, then set AX-global coordinates.
+            guard let native = NSEvent.mouseEvent(with: type, location: .zero, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: windowNumber, context: nil,
+                    eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0),
+                  let event = native.cgEvent else { return nil }
+            event.location = point
             event.flags = [] // Never inherit the pad's Hyper modifiers.
             event.setIntegerValueField(.mouseEventClickState, value: 1)
+            event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(windowNumber))
+            event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(windowNumber))
             event.setIntegerValueField(.eventSourceUserData, value: KeyboardOutput.eventTag)
+            events.append(event)
         }
-        return [down, up]
+        return events
     }
 }

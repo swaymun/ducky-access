@@ -1,5 +1,6 @@
 import XCTest
 import ApplicationServices
+import AppKit
 @testable import DuckyAccess
 
 final class NavigationActivationTests: XCTestCase {
@@ -22,7 +23,7 @@ final class NavigationActivationTests: XCTestCase {
 
     func testSingleClickPairHasNoModifiersAndCannotInvalidateOwnNAV() throws {
         let point = CGPoint(x: -2000, y: 400)
-        let events = try XCTUnwrap(NavigationActivation.clickEvents(at: point))
+        let events = try XCTUnwrap(NavigationActivation.clickEvents(at: point, windowNumber: 1234))
         XCTAssertEqual(events.map(\.type), [.leftMouseDown, .leftMouseUp])
         let router = KeyboardRouter()
         var invalidations = 0
@@ -32,10 +33,16 @@ final class NavigationActivationTests: XCTestCase {
             XCTAssertEqual(event.flags, [])
             XCTAssertEqual(event.getIntegerValueField(.mouseEventClickState), 1)
             XCTAssertEqual(event.getIntegerValueField(.eventSourceUserData), KeyboardOutput.eventTag)
+            XCTAssertEqual(event.getIntegerValueField(.mouseEventWindowUnderMousePointer), 1234)
+            XCTAssertEqual(event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent), 1234)
+            XCTAssertEqual(NSEvent(cgEvent: event)?.windowNumber, 1234)
             XCTAssertNotNil(router.processEvent(event.type, event))
         }
         XCTAssertEqual(invalidations, 0)
-        XCTAssertNil(NavigationActivation.clickEvents(at: CGPoint(x: CGFloat.infinity, y: 0)))
+        XCTAssertNil(NavigationActivation.clickEvents(at: CGPoint(x: CGFloat.infinity, y: 0), windowNumber: 1234))
+        XCTAssertNil(NavigationActivation.clickEvents(at: point, windowNumber: 0))
+        XCTAssertNil(NavigationActivation.clickEvents(at: point, windowNumber: -1))
+        XCTAssertNil(NavigationActivation.clickEvents(at: point, windowNumber: Int(UInt32.max) + 1))
     }
 
     func testHitMustBeTargetOrNonInteractiveDescendantNotNestedControl() {
@@ -78,7 +85,7 @@ final class NavigationActivationTests: XCTestCase {
     }
 
     func testHitIsCheckedAfterContextAndChangedTargetPostsNothing() throws {
-        let events = try XCTUnwrap(NavigationActivation.clickEvents(at: .zero))
+        let events = try XCTUnwrap(NavigationActivation.clickEvents(at: .zero, windowNumber: 1234))
         var sameTarget = true
         var posts = 0
         XCTAssertFalse(NavigationActivation.dispatchClick(events: events, ticket: NavigationTicket(), validateContext: {
@@ -96,5 +103,20 @@ final class NavigationActivationTests: XCTestCase {
             order.append("context"); return true
         }, validateHit: { order.append("hit"); return true }, post: { event in order.append(event.type == .leftMouseDown ? "down" : "up") }))
         XCTAssertEqual(order, ["context", "hit", "down", "up"])
+    }
+
+    func testDestinationWindowMustMatchOwnerGeometryAndVisibility() {
+        let rect = CGRect(x: 800, y: -1200, width: 1000, height: 900)
+        let point = CGPoint(x: 1000, y: -900)
+        let valid: [String: Any] = [kCGWindowNumber as String: 1234, kCGWindowOwnerPID as String: 42,
+            kCGWindowIsOnscreen as String: true, kCGWindowBounds as String: rect.dictionaryRepresentation]
+        XCTAssertTrue(NavigationActivation.matchesWindow(valid, number: 1234, pid: 42, frame: rect, point: point))
+        XCTAssertFalse(NavigationActivation.matchesWindow(valid, number: 1235, pid: 42, frame: rect, point: point))
+        XCTAssertFalse(NavigationActivation.matchesWindow(valid, number: 1234, pid: 43, frame: rect, point: point))
+        XCTAssertFalse(NavigationActivation.matchesWindow(valid, number: 1234, pid: 42, frame: rect.offsetBy(dx: 5, dy: 0), point: point))
+        XCTAssertFalse(NavigationActivation.matchesWindow(valid, number: 1234, pid: 42, frame: rect, point: .zero))
+        var hidden = valid; hidden[kCGWindowIsOnscreen as String] = false
+        XCTAssertFalse(NavigationActivation.matchesWindow(hidden, number: 1234, pid: 42, frame: rect, point: point))
+        XCTAssertFalse(NavigationActivation.matchesWindow([:], number: 1234, pid: 42, frame: rect, point: point))
     }
 }

@@ -105,7 +105,9 @@ in-flight AX request can extend the budget; it does not run on the UI thread.
 The selected target is revalidated before activation. NAV sends one unmodified
 mouse click to the selected app after an AX hit-test confirms the target (or
 its non-interactive text/image child); it refuses clicks covered by a different
-control. This supports pointer-driven web controls and focuses input boxes.
+control. Events carry the verified destination window as well as the app PID;
+bare CG mouse events posted to a PID can be silently dropped by AppKit.
+This supports pointer-driven web controls and focuses input boxes.
 Menu items use AX activation. Click points use the visible portion on a display,
 not the potentially off-screen center of a spanning control. Cancelled results
 cannot restore the overlay, and dispatched actions are never automatically retried.
@@ -121,6 +123,13 @@ follow the visible page, omit hidden/disabled controls, and activate the named
 test button exactly once, the pointer-driven button, input focus, and test link.
 Separately verify Codex on each monitor and rapid NAV → ESC during
 collection. Unit tests alone do not establish these physical/UI acceptance gates.
+
+For an isolated native click-delivery check, quit Ducky Access, then run
+`open /Applications/DuckyAccess.app --args --nav-click-probe` and click
+**Run delivery comparison**. It compares the previous bare-CGEvent path with
+the window-addressed path, clicking only its own test button. The addressed
+path must deliver exactly one click. The bridge is paused in this explicit
+test mode; close the test window and launch the app normally to resume it.
 
 ### Spoken shortcuts
 
