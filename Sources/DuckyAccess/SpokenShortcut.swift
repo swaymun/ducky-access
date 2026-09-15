@@ -29,7 +29,7 @@ enum SpokenShortcut {
             ("page up", "pageup"), ("page down", "pagedown"), ("space bar", "space"),
             ("up arrow", "up"), ("down arrow", "down"), ("left arrow", "left"), ("right arrow", "right"),
             ("arrow up", "up"), ("arrow down", "down"), ("arrow left", "left"), ("arrow right", "right"),
-            ("forward delete", "forwarddelete")
+            ("forward delete", "forwarddelete"), ("left bracket", "leftbracket"), ("right bracket", "rightbracket")
         ] { text = text.replacingOccurrences(of: phrase, with: replacement) }
         for (symbol, name) in [("⌘", " command "), ("⌃", " control "), ("⌥", " option "), ("⇧", " shift ")] {
             text = text.replacingOccurrences(of: symbol, with: name)
@@ -81,6 +81,7 @@ enum SpokenShortcut {
         "home": (115, "Home"), "end": (119, "End"), "pageup": (116, "Page Up"), "pagedown": (121, "Page Down"),
         "comma": (43, ","), "period": (47, "."), "slash": (44, "/"), "backslash": (42, "\\"),
         "minus": (27, "−"), "equals": (24, "="), "backtick": (50, "`"),
+        "leftbracket": (33, "["), "[": (33, "["), "rightbracket": (30, "]"), "]": (30, "]"),
         "f1": (122, "F1"), "f2": (120, "F2"), "f3": (99, "F3"), "f4": (118, "F4"),
         "f5": (96, "F5"), "f6": (97, "F6"), "f7": (98, "F7"), "f8": (100, "F8"),
         "f9": (101, "F9"), "f10": (109, "F10"), "f11": (103, "F11"), "f12": (111, "F12")

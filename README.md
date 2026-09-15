@@ -106,9 +106,47 @@ F1–F12, arrows, and common named keys. They use macOS English/ANSI key positio
 Shortcuts act on the focused app just like the keyboard, including shortcuts
 that submit or delete. **DICT** remains text-only; it never executes shortcuts.
 
-### Multi-step commands (experimental)
+### Shortcut-first commands (experimental)
 
-Other CMD requests use Luna through ChatGPT's bundled Codex App Server.
+Other CMD requests make one tool-free planning call to Luna through ChatGPT's
+bundled Codex App Server. The planner sees the request and starting app's bundle
+ID, not your screen. It chooses a complete, validated sequence of up to 12
+Chrome/Codex catalog actions, computer use, or a clarification question.
+
+Try:
+
+- “In Chrome, open a new tab and go to https://example.com.”
+- “In Chrome, find the word domain, then go to the next match.”
+- “In Codex, create a new chat, then open the model picker.”
+- “In Codex, go to the next chat needing attention.”
+
+The native executor sends known shortcuts in order, with local foreground,
+window, dialog, and protected-field checks. URL entry verifies Chrome's address
+field and the inserted text before sending Return. It accepts only explicit
+HTTP(S) addresses from the request; say the full address (spoken “dot” and
+“slash” are supported). No arbitrary typing, shell commands, or generated
+keycodes are accepted. “Sent shortcuts” means the sequence was dispatched,
+not that a page loaded or an app's task completed. Selecting a particular model
+still needs computer use; opening its picker does not.
+
+The notch shows “Shortcuts 1/2” or “Computer use.” Click it, press the pad's ESC,
+or press CMD again to stop planning or execution. Planning stops after 25 seconds.
+After a partial failure, the app stops and reports it; it never automatically
+replays the request with computer use. **Ask before actions** confirms the whole
+shortcut plan once. Full Access skips routine prompts, but closing a tab and
+model-flagged sensitive sequences still require confirmation.
+
+The catalog uses default Mac bindings from [Chrome Help](https://support.google.com/chrome/answer/157179)
+and [OpenAI Commands](https://learn.chatgpt.com/docs/reference/commands#keyboard-shortcuts),
+checked against the installed Codex desktop command definitions on 2026-09-14.
+Custom app/OS shortcut overrides are not imported; they can change what a chord
+does. [Shortcards](https://shortcards.app/) informed the reference-library approach;
+its app, artwork, and content are not bundled or required.
+
+### Computer-use fallback
+
+Requests such as finding a named video, choosing items by what is visible, or
+testing an app use the computer-use path. Unsupported apps also use this path.
 Ducky Access executes a small set of native Accessibility and keyboard/mouse
 actions under its own macOS permissions, with no Computer Use helper or Wonder
 installation required. The model receives only fixed tools, not arbitrary code.
@@ -155,7 +193,8 @@ The [demo video](demo/ducky-access-demo.mp4) is a clean, synthetic product walkt
 
 Audio and dictation history are stored locally until deleted. Parakeet and
 literal shortcut parsing run locally. DICT sends its finished transcript to
-Luna for formatting. Multi-step CMD runs additionally send the relevant app's
+Luna for formatting. Shortcut planning sends only the command and starting app
+identity. Computer-use CMD runs additionally send the relevant app's
 accessibility text and requested window screenshots to the selected
 Codex model. On-screen content can contain private information; only use CMD
 with apps you intend the agent to inspect. Command sessions are ephemeral;

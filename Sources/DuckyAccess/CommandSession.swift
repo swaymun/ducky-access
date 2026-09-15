@@ -10,6 +10,16 @@ final class CommandSession {
     private let server: CommandRPC
     private let computer: CommandRPC
     private let permissionProfile: CommandPermissionProfile
+    private let routeShortcuts: Bool
+    private let shortcutExecutor: ShortcutExecuting
+    private var planningShortcuts = false
+    private var executingShortcuts = false
+    private var plannerExpiry: DispatchWorkItem?
+    private var disabledMCP: [String: [String: Bool]] = [:]
+    private var requestText = ""
+    private var initialPID: pid_t?
+    private var initialApp = "unknown"
+    private var model = "", effort = "", serviceTier = ""
     private(set) var active = false
     private var started = false
     private var threadID: String?
@@ -28,16 +38,22 @@ final class CommandSession {
     static let summaryKey = "ducky_step_summary"
     static let approvalKey = "ducky_requires_confirmation"
 
-    init(server: CommandRPC = JSONRPCProcess(), computer: CommandRPC = NativeComputerControl(), permissionProfile: CommandPermissionProfile = .askBeforeActions) {
+    init(server: CommandRPC = JSONRPCProcess(), computer: CommandRPC = NativeComputerControl(), permissionProfile: CommandPermissionProfile = .askBeforeActions,
+         routeShortcuts: Bool = false, shortcutExecutor: ShortcutExecuting = ShortcutExecutor()) {
         self.server = server; self.computer = computer
         self.permissionProfile = permissionProfile
+        self.routeShortcuts = routeShortcuts; self.shortcutExecutor = shortcutExecutor
         (computer as? NativeComputerControl)?.permissionProfile = permissionProfile
     }
 
-    func start(_ text: String, model: String, effort: String, serviceTier: String) {
+    func start(_ text: String, model: String, effort: String, serviceTier: String, focusedApp: String? = nil) {
         guard !started else { return }
         started = true
         active = true
+        requestText = text; self.model = model; self.effort = effort; self.serviceTier = serviceTier
+        initialPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        initialApp = focusedApp ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
+        planningShortcuts = routeShortcuts
         (computer as? NativeComputerControl)?.onApproval = { [weak self] message, reply in
             guard let self, self.active, let onApproval = self.onApproval else { reply(false); return }
             self.onProgress?("Approval needed — click to stop")
@@ -47,7 +63,8 @@ final class CommandSession {
                 if !approved { self.cancel() }
             }
         }
-        onProgress?("Connecting computer control…")
+        onProgress?(routeShortcuts ? "Choosing shortcuts or computer use…" : "Connecting computer control…")
+        guard active else { return }
         computer.onExit = { [weak self] in self?.fail("Computer Use disconnected.") }
         server.onExit = { [weak self] in self?.fail("Codex App Server disconnected.") }
         server.onRequest = { [weak self] in self?.handleRequest($0) }
@@ -73,12 +90,12 @@ final class CommandSession {
                     if let name = spec["name"] as? String, Self.allowedTools.contains(name) { self.tools["ducky_" + name] = spec }
                 }
                 guard self.tools["ducky_get_app_state"] != nil else { self.fail("Computer control has no app-state tool."); return }
-                self.initializeAgent(text, model: model, effort: effort, serviceTier: serviceTier)
+                self.initializeAgent()
             }
         }
     }
 
-    private func initializeAgent(_ text: String, model: String, effort: String, serviceTier: String) {
+    private func initializeAgent() {
         server.request("initialize", ["clientInfo": ["name": "ducky-access-commands", "version": "0.2"], "capabilities": ["experimentalApi": true]]) { [weak self] result in
             guard let self, self.active else { return }
             guard case .success = result else { self.fail(result.failureDescription); return }
@@ -89,28 +106,78 @@ final class CommandSession {
                 guard let self, self.active else { return }
                 guard case .success(let response) = result, let config = response["config"] as? JSON else { self.fail("Could not isolate command tools."); return }
                 let servers = config["mcp_servers"] as? JSON ?? [:]
-                let disabled = Dictionary(uniqueKeysWithValues: servers.keys.map { ($0, ["enabled": false]) })
-                let specs = self.tools.sorted(by: { $0.key < $1.key }).map { Self.dynamicSpec(name: $0.key, tool: $0.value) }
-                let focused = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
-                self.server.request("thread/start", [
+                self.disabledMCP = Dictionary(uniqueKeysWithValues: servers.keys.map { ($0, ["enabled": false]) })
+                self.startAgentThread()
+            }
+        }
+    }
+
+    private func startAgentThread() {
+        guard active else { return }
+        threadID = nil; turnID = nil; lastMessage = ""
+        let specs = planningShortcuts ? [] : tools.sorted(by: { $0.key < $1.key }).map { Self.dynamicSpec(name: $0.key, tool: $0.value) }
+        server.request("thread/start", [
                     "ephemeral": true, "model": model, "serviceTier": serviceTier,
-                    "approvalPolicy": "never", "permissions": self.permissionProfile.codexPermission, "environments": [],
-                    "config": ["mcp_servers": disabled], "dynamicTools": specs,
-                    "developerInstructions": Self.instructions
+                    "approvalPolicy": "never", "permissions": planningShortcuts ? ":read-only" : permissionProfile.codexPermission, "environments": [],
+                    "config": ["mcp_servers": disabledMCP], "dynamicTools": specs,
+                    "developerInstructions": planningShortcuts ? ShortcutPlan.instructions : Self.instructions
                 ]) { [weak self] result in
                     guard let self, self.active else { return }
                     guard case .success(let response) = result, let thread = response["thread"] as? JSON, let id = thread["id"] as? String else { self.fail(result.failureDescription); return }
                     self.threadID = id
-                    self.onProgress?("Planning steps…")
-                    self.server.request("turn/start", ["threadId": id, "model": model, "effort": effort, "serviceTierForTurn": serviceTier,
-                        "environments": [], "input": [["type": "text", "text": "The focused app at command start was \(focused). User's spoken request: \(text)"]]]) { [weak self] result in
-                        guard let self, self.active else { return }
+                    self.onProgress?(self.planningShortcuts ? "Planning shortcuts…" : "Computer use · planning steps…")
+                    guard self.active else { return }
+                    var params: JSON = ["threadId": id, "model": self.model, "effort": self.effort, "serviceTierForTurn": self.serviceTier,
+                        "environments": [], "input": [["type": "text", "text": "The focused app at command start was \(self.initialApp). User's spoken request: \(self.requestText)"]]]
+                    if self.planningShortcuts {
+                        params["outputSchema"] = ShortcutPlan.schema
+                        let timeout = DispatchWorkItem { [weak self] in self?.fail("Shortcut planning timed out. No app actions were sent; try a simpler command.") }
+                        self.plannerExpiry = timeout
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 25, execute: timeout)
+                    }
+                    self.server.request("turn/start", params) { [weak self] result in
+                        guard let self, self.active, self.threadID == id else { return }
                         guard case .success(let response) = result, let turn = response["turn"] as? JSON, let id = turn["id"] as? String else { self.fail(result.failureDescription); return }
                         self.turnID = id
                     }
                 }
+    }
+
+    private func handleShortcutPlan() {
+        plannerExpiry?.cancel(); plannerExpiry = nil
+        do {
+            let plan = try ShortcutPlan.decode(lastMessage, request: requestText)
+            logger.info("Command route=\(plan.route.rawValue, privacy: .public) shortcutActions=\(plan.steps.count)")
+            switch plan.route {
+            case .clarify: finish(Outcome(text: plan.reason, error: nil, cancelled: false))
+            case .computer:
+                planningShortcuts = false
+                startAgentThread() // No fast-path prefix was executed, so nothing is replayed.
+            case .shortcuts:
+                executingShortcuts = true
+                threadID = nil; turnID = nil
+                server.onExit = nil
+                server.stop() // No tools/model are involved in execution of the approved catalog.
+                let execute = { [weak self] in
+                    guard let self, self.active else { return }
+                    self.shortcutExecutor.run(plan, initialPID: self.initialPID, progress: { [weak self] in self?.onProgress?($0) }) { [weak self] result in
+                        guard let self, self.active else { return }
+                        switch result {
+                        case .success(let text): self.finish(Outcome(text: text, error: nil, cancelled: false))
+                        case .failure(let error): self.fail(error.localizedDescription)
+                        }
+                    }
+                }
+                if permissionProfile == .askBeforeActions || plan.requiresConfirmation || plan.steps.contains(where: { ShortcutPlan.action($0.action)?.confirmation == true }) {
+                    guard let onApproval else { fail("Confirmation is required; no shortcuts were sent."); return }
+                    let details = plan.steps.map { "\(ShortcutPlan.action($0.action)!.title) [\($0.action)]\($0.argument.map { ": " + $0 } ?? "")" }.joined(separator: "\n")
+                    onApproval("Run this exact shortcut sequence?\n\(details)") { [weak self] approved in
+                        guard let self, self.active else { return }
+                        if approved { execute() } else { self.cancel() }
+                    }
+                } else { execute() }
             }
-        }
+        } catch { fail(error.localizedDescription) }
     }
 
     static func dynamicSpec(name: String, tool: JSON) -> JSON {
@@ -133,6 +200,7 @@ final class CommandSession {
         }
         let reject: (String) -> Void = { [weak self] text in self?.server.send(["id": id, "result": Self.toolResult(text, success: false)]) }
         guard active else { reject("Command cancelled. Do not perform more actions."); return }
+        guard !planningShortcuts && !executingShortcuts else { reject("Planning is tool-free; return the route JSON only."); return }
         guard params["threadId"] as? String == threadID, let tool = params["tool"] as? String,
               let spec = tools[tool], let name = spec["name"] as? String,
               var args = params["arguments"] as? JSON else { reject("Unknown command tool or session."); return }
@@ -204,7 +272,9 @@ final class CommandSession {
     }
 
     private func handleNotification(_ message: JSON) {
-        guard let params = message["params"] as? JSON, params["threadId"] as? String == threadID else { return }
+        guard active, !executingShortcuts, let threadID, let params = message["params"] as? JSON, params["threadId"] as? String == threadID else { return }
+        let eventTurn = params["turnId"] as? String ?? (params["turn"] as? JSON)?["id"] as? String
+        if let turnID, let eventTurn, eventTurn != turnID { return }
         let method = message["method"] as? String
         if method == "turn/started", let turn = params["turn"] as? JSON { turnID = turn["id"] as? String }
         if method == "turn/completed" {
@@ -214,11 +284,12 @@ final class CommandSession {
             let status = turn["status"] as? String
             if status == "interrupted" { cancel(); return }
             if status == "failed" { fail("The command could not finish."); return }
+            if planningShortcuts { handleShortcutPlan(); return }
             let summary = lastMessage.isEmpty ? "Command finished without a summary. Check the app." : lastMessage
             finish(Outcome(text: summary, error: lastToolError, cancelled: false))
         } else if method == "item/completed", let item = params["item"] as? JSON, item["type"] as? String == "agentMessage", let text = item["text"] as? String {
             lastMessage = text
-            if active { onProgress?(text) }
+            if active && !planningShortcuts { onProgress?(text) }
         } else if method == "error", params["willRetry"] as? Bool != true {
             let error = params["error"] as? JSON
             fail(error?["message"] as? String ?? "Codex could not finish the command.")
@@ -232,6 +303,8 @@ final class CommandSession {
         guard active else { return }
         active = false // Close the local gate BEFORE any asynchronous interrupt.
         expiry?.cancel(); expiry = nil
+        plannerExpiry?.cancel(); plannerExpiry = nil
+        shortcutExecutor.cancel()
         computer.stop()
         logger.info("Command finished cancelled=\(outcome.cancelled) steps=\(self.stepCount)")
         if let threadID, let turnID, outcome.cancelled || outcome.error != nil {

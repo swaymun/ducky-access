@@ -19,6 +19,7 @@ final class DuckyAccessController: NSObject {
     private var menu = NSMenu()
     private var recordingMode: RecordingMode?
     private var commandID: UUID?
+    private var commandFocusApp: String?
     private var commandSession: CommandSession?
     private var commandApproval: NSAlert?
     private var speechStarting = false
@@ -138,6 +139,7 @@ final class DuckyAccessController: NSObject {
         recordingMode = mode
         let id = mode == .command ? UUID() : nil
         commandID = id
+        if mode == .command { commandFocusApp = NSWorkspace.shared.frontmostApplication?.bundleIdentifier }
         notch.commandCancellable = mode == .command
         status = .recording
         notch.show(mode: mode)
@@ -242,7 +244,7 @@ final class DuckyAccessController: NSObject {
 
     private func runMultiStepCommand(_ text: String, id: UUID, audioData: Data?, duration: TimeInterval) {
         appSwitcher.cancel(); navigator.close()
-        let session = CommandSession(permissionProfile: commandPermissions)
+        let session = CommandSession(permissionProfile: commandPermissions, routeShortcuts: true)
         commandSession = session
         session.onProgress = { [weak self] message in
             guard let self, self.commandID == id else { return }
@@ -277,7 +279,7 @@ final class DuckyAccessController: NSObject {
             self.lastError = outcome.error; self.status = outcome.error == nil ? .ready : .error
             self.rebuildMenu()
         }
-        session.start(text, model: model, effort: effort, serviceTier: serviceTier)
+        session.start(text, model: model, effort: effort, serviceTier: serviceTier, focusedApp: commandFocusApp)
     }
 
     func cancelCommand() {
@@ -315,6 +317,7 @@ final class DuckyAccessController: NSObject {
     @objc func showHelp(_ sender: Any?) { help.show() }
     @objc func runTypedCommand(_ sender: Any?) {
         guard commandID == nil, recordingMode == nil, !speechStarting, !speechFinalizing, status != .formatting else { NSSound.beep(); return }
+        let focusedApp = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let alert = NSAlert()
         alert.messageText = "Run a computer command"
         alert.informativeText = "Describe the steps to perform. Click the notch or press ESC to stop. Actions already sent may finish."
@@ -328,6 +331,7 @@ final class DuckyAccessController: NSObject {
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         let id = UUID(); commandID = id; status = .formatting
+        commandFocusApp = focusedApp
         notch.commandCancellable = true; notch.show(mode: .command)
         runMultiStepCommand(text, id: id, audioData: nil, duration: 0)
         rebuildMenu()
