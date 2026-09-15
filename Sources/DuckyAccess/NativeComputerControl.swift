@@ -217,7 +217,7 @@ final class NativeComputerControl: CommandRPC {
         guard let state = observation, state.app == args["app"] as? String, Date().timeIntervalSince(state.time) < 30 else { throw Fault("Read fresh app state before acting (observation expired or missing).") }
         observation = nil
         let bundleID = DispatchQueue.main.sync { NSRunningApplication(processIdentifier: state.pid)?.bundleIdentifier ?? "" }
-        if Self.requiresNativeConfirmation(name, bundleID: bundleID, profile: permissionProfile) || requestedApproval != nil {
+        if Self.requiresNativeConfirmation(name, bundleID: bundleID, profile: permissionProfile, requestedByModel: requestedApproval != nil) {
             let detail: String
             if name == "type_text" { detail = "Insert this exact text:\n" + String((args["text"] as? String ?? "").prefix(8000)) }
             else if name == "press_key" { detail = "Press: " + (args["key"] as? String ?? "") }
@@ -301,11 +301,12 @@ final class NativeComputerControl: CommandRPC {
         }
     }
 
-    // A deliberately small automatic-action surface. The model cannot opt out
-    // of confirmation for unknown apps or text injection into an execution host.
+    // In Ask before actions, the model cannot opt out of required confirmations.
+    // Only the user's selected Full Access profile suppresses all Ducky prompts.
     // Literal user-spoken shortcuts and ordinary DICT do not use this agent path.
-    static func requiresNativeConfirmation(_ name: String, bundleID: String, profile: CommandPermissionProfile = .askBeforeActions) -> Bool {
-        if profile == .fullAccess { return false }
+    static func requiresNativeConfirmation(_ name: String, bundleID: String, profile: CommandPermissionProfile = .askBeforeActions, requestedByModel: Bool = false) -> Bool {
+        guard profile.showsApprovalPrompts else { return false }
+        if requestedByModel { return true }
         if bundleID == "com.apple.calculator" { return false }
         if bundleID == "com.apple.TextEdit" { return name == "type_text" }
         return true

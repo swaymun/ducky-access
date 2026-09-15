@@ -88,7 +88,6 @@ final class ShortcutRoutingTests: XCTestCase {
                 XCTAssertNotNil(NativeComputerControl.shortcut(chord), "Unparseable catalog chord for \(action.id): \(chord)")
             }
         }
-        XCTAssertEqual(ShortcutPlan.action("chrome.close_tab")?.confirmation, true)
         XCTAssertEqual(Set(ShortcutPlan.catalog.filter(\.takesArgument).map(\.id)), ["chrome.navigate", "chrome.find"])
 
         let required = ShortcutPlan.schema["required"] as? [String]
@@ -220,8 +219,8 @@ final class ShortcutRoutingTests: XCTestCase {
         harness.session.cancel()
     }
 
-    func testFullAccessStillAsksForModelSensitivePlanAndDenialCancels() throws {
-        let harness = try startPlanner(profile: .fullAccess, request: "In Codex, open settings")
+    func testAskBeforeActionsConfirmsSensitivePlanAndDenialCancels() throws {
+        let harness = try startPlanner(profile: .askBeforeActions, request: "In Codex, open settings")
         var approval: ((Bool) -> Void)?
         var prompt = ""
         var outcome: CommandSession.Outcome?
@@ -237,6 +236,20 @@ final class ShortcutRoutingTests: XCTestCase {
         XCTAssertEqual(outcome?.cancelled, true)
         XCTAssertEqual(harness.executor.runs.count, 0)
         XCTAssertFalse(harness.computer.requestHistory.contains("tools/call"))
+    }
+
+    func testFullAccessExecutesTabClosingWithEitherModelFlagWithoutApproval() throws {
+        for requiresConfirmation in [false, true] {
+            let harness = try startPlanner(profile: .fullAccess, request: "In Chrome, close the current tab")
+            defer { harness.session.cancel() }
+            harness.session.onApproval = { _, _ in XCTFail("Full Access must not request approval") }
+            emitPlan(planJSON(route: "shortcuts", reason: "Close the current tab.", requiresConfirmation: requiresConfirmation,
+                              steps: [["action": "chrome.close_tab", "argument": NSNull()]]), to: harness)
+
+            XCTAssertEqual(harness.executor.runs.count, 1)
+            XCTAssertTrue(harness.session.active)
+            XCTAssertFalse(harness.computer.requestHistory.contains("tools/call"))
+        }
     }
 
     func testCancellingDuringShortcutExecutionCancelsExecutorAndIgnoresLateCompletion() throws {

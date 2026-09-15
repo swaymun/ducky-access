@@ -133,8 +133,8 @@ The notch shows “Shortcuts 1/2” or “Computer use.” Click it, press the p
 or press CMD again to stop planning or execution. Planning stops after 25 seconds.
 After a partial failure, the app stops and reports it; it never automatically
 replays the request with computer use. **Ask before actions** confirms the whole
-shortcut plan once. Full Access skips routine prompts, but closing a tab and
-model-flagged sensitive sequences still require confirmation.
+shortcut plan once. **Full Access** skips all Ducky approval prompts, including
+tab-closing and model-flagged sensitive sequences.
 
 The catalog uses default Mac bindings from [Chrome Help](https://support.google.com/chrome/answer/157179)
 and [OpenAI Commands](https://learn.chatgpt.com/docs/reference/commands#keyboard-shortcuts),
@@ -164,12 +164,13 @@ The notch shows the current step. **Click the notch, press ESC, or press CMD
 again to stop**. Cancellation blocks further tool calls immediately, interrupts
 the agent, and closes this command's App Server process. An action already dispatched may
 finish; completed actions cannot be undone. Runs are limited to 40 tool calls
-and three minutes. Sensitive steps request native confirmation; Cancel is the
-default. **Permissions → Ask before actions** additionally confirms actions
-outside Calculator/TextEdit and text insertion in TextEdit. **Permissions →
-Full Access** removes those extra routine prompts and selects Codex's
-`:danger-full-access` permission profile. Sensitive actions still ask, and
-macOS permissions are separate. The choice persists and applies to the next
+and three minutes. **Permissions → Ask before actions** confirms sensitive steps,
+actions outside Calculator/TextEdit, and text insertion in TextEdit; Cancel is
+the default. **Permissions → Full Access** skips all Ducky approval prompts and
+selects Codex's `:danger-full-access` permission profile. Requested actions can
+send or delete data without another Ducky confirmation. macOS permissions,
+other apps' warnings, cancellation, and focus checks remain in effect.
+The choice persists and applies to the next
 command; the model cannot change it. Shell tools and unrelated connectors stay
 disabled in both modes. A tool timeout stops the run instead of blindly retrying an action
 that might already have completed.

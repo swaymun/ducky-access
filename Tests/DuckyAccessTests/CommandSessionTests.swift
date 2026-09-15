@@ -213,7 +213,7 @@ final class CommandSessionTests: XCTestCase {
         XCTAssertFalse(dispatched)
     }
 
-    func testNativeConfirmationCannotBeDisabledForUnknownExecutionHosts() {
+    func testAskBeforeActionsKeepsNativeAndModelRequestedConfirmations() {
         for bundle in ["com.example.CustomTerminal", "com.google.Chrome", "", "com.microsoft.VSCode"] {
             for action in ["click", "press_key", "type_text", "scroll"] {
                 XCTAssertTrue(NativeComputerControl.requiresNativeConfirmation(action, bundleID: bundle))
@@ -221,18 +221,39 @@ final class CommandSessionTests: XCTestCase {
         }
         XCTAssertFalse(NativeComputerControl.requiresNativeConfirmation("press_key", bundleID: "com.apple.calculator"))
         XCTAssertTrue(NativeComputerControl.requiresNativeConfirmation("type_text", bundleID: "com.apple.TextEdit"))
+        for bundle in ["com.apple.calculator", "com.apple.TextEdit"] {
+            XCTAssertTrue(NativeComputerControl.requiresNativeConfirmation("press_key", bundleID: bundle, requestedByModel: true))
+        }
     }
 
-    func testFullAccessKeepsSensitiveApprovalAndUsesNamedProfile() {
-        XCTAssertFalse(NativeComputerControl.requiresNativeConfirmation("press_key", bundleID: "com.google.Chrome", profile: .fullAccess))
+    func testFullAccessSkipsAllNativeConfirmations() {
+        for bundle in ["com.apple.calculator", "com.apple.TextEdit", "com.google.Chrome", "com.example.CustomApp", ""] {
+            for action in ["click", "press_key", "type_text", "scroll"] {
+                for requestedByModel in [false, true] {
+                    XCTAssertFalse(NativeComputerControl.requiresNativeConfirmation(action, bundleID: bundle,
+                        profile: .fullAccess, requestedByModel: requestedByModel))
+                }
+            }
+        }
+    }
+
+    func testFullAccessSkipsSensitiveApprovalButKeepsObservationAndCancellationGuards() {
         let (run, server, computer) = startedSession(profile: .fullAccess)
         defer { run.cancel() }
+        run.onApproval = { _, _ in XCTFail("Full Access must not request approval") }
+        server.onRequest?(call(0, name: "press_key", approval: true))
+        XCTAssertFalse(computer.requests.contains { $0.method == "tools/call" })
         server.onRequest?(call(1, name: "get_app_state"))
         computer.take("tools/call")?(.success([:]))
-        var requested = false
-        run.onApproval = { _, _ in requested = true }
         server.onRequest?(call(2, name: "press_key", approval: true))
-        XCTAssertTrue(requested)
+        XCTAssertTrue(computer.requests.contains { $0.method == "tools/call" })
+        computer.take("tools/call")?(.success([:]))
+        server.onRequest?(call(3, name: "press_key", approval: true))
+        XCTAssertFalse(computer.requests.contains { $0.method == "tools/call" })
+        server.onRequest?(call(4, name: "get_app_state"))
+        computer.take("tools/call")?(.success([:]))
+        run.cancel()
+        server.onRequest?(call(5, name: "press_key", approval: true))
         XCTAssertFalse(computer.requests.contains { $0.method == "tools/call" })
     }
 

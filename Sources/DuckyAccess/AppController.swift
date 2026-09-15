@@ -389,7 +389,7 @@ final class DuckyAccessController: NSObject {
         menu.addItem(submenu("Reasoning: \(effort.capitalized)", values: ["none", "low", "medium", "high", "xhigh"], selected: effort, action: #selector(selectEffort(_:))))
         menu.addItem(submenu("Speed: \(serviceTier == "priority" ? "Fast" : "Default")", values: ["Default", "Fast"], selected: serviceTier == "priority" ? "Fast" : "Default", action: #selector(selectSpeed(_:))))
         let commandPermissionItem = submenu("Permissions: \(commandPermissions.rawValue)", values: CommandPermissionProfile.allCases.map(\.rawValue), selected: commandPermissions.rawValue, action: #selector(selectCommandPermissions(_:)))
-        commandPermissionItem.toolTip = "Full Access runs routine actions without per-app prompts. Sensitive actions still ask. Applies to the next command; macOS permissions are separate."
+        commandPermissionItem.toolTip = "Full Access runs commands without Ducky approval popups, including sensitive actions. Applies to the next command; macOS permissions and click-to-stop still apply."
         commandPermissionItem.submenu?.autoenablesItems = false
         commandPermissionItem.submenu?.items.forEach { $0.isEnabled = commandID == nil }
         menu.addItem(commandPermissionItem)

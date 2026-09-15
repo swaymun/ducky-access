@@ -9,4 +9,5 @@ enum CommandPermissionProfile: String, CaseIterable {
         Self(rawValue: defaults.string(forKey: defaultsKey) ?? "") ?? .askBeforeActions
     }
     var codexPermission: String { self == .fullAccess ? ":danger-full-access" : ":read-only" }
+    var showsApprovalPrompts: Bool { self == .askBeforeActions }
 }

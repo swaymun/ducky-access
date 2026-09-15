@@ -19,7 +19,6 @@ struct ShortcutPlan: Decodable {
         let chord: String?
         var app: String { id.hasPrefix("chrome.") ? "com.google.Chrome" : "com.openai.codex" }
         var takesArgument: Bool { id == "chrome.navigate" || id == "chrome.find" }
-        var confirmation: Bool { id.hasSuffix("close_tab") }
     }
 
     // Sources: official Chrome Mac shortcuts and OpenAI Commands, checked
